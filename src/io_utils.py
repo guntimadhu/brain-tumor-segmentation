@@ -28,10 +28,10 @@ def load_single_mask(mask_path):
     if not os.path.isfile(mask_path):
         raise FileNotFoundError(f"Mask not found: {mask_path}")
     img = Image.open(mask_path).convert("L")
-    arr = np.array(img, dtype=np.uint8)
-    if arr.max() <= 1:
-        arr = arr * 255
-    return arr
+    arr = np.array(img, dtype=np.float32)
+    if arr.max() <= 1.0:
+        arr = arr * 255.0
+    return arr.astype(np.uint8)
 
 
 def _image_from_bytes(data):
@@ -44,10 +44,10 @@ def _image_from_bytes(data):
 
 def _mask_from_bytes(data):
     img = Image.open(io.BytesIO(data)).convert("L")
-    arr = np.array(img, dtype=np.uint8)
-    if arr.max() <= 1:
-        arr = arr * 255
-    return arr
+    arr = np.array(img, dtype=np.float32)
+    if arr.max() <= 1.0:
+        arr = arr * 255.0
+    return arr.astype(np.uint8)
 
 
 def load_from_uploaded_file(uploaded_file):
@@ -102,7 +102,7 @@ def load_from_zip(zip_file):
     images = [_image_from_bytes(file_data[n]) for n in image_names]
     masks = [_mask_from_bytes(file_data[n]) for n in mask_names] if mask_names else []
 
-    tumor_slices = [i for i, m in enumerate(masks) if np.any(m > 0)]
+    tumor_slices = [i for i, m in enumerate(masks) if bool(np.any(m > 10))]
     zip_name = os.path.splitext(zip_file.name)[0]
     return {
         "images": images,
@@ -186,7 +186,7 @@ def load_patient_data(patient_folder_path):
     images = [load_single_image(os.path.join(patient_folder_path, f)) for f in image_files]
     masks = [load_single_mask(os.path.join(patient_folder_path, f)) for f in mask_files] if mask_files else []
 
-    tumor_slices = [i for i, m in enumerate(masks) if np.any(m > 0)]
+    tumor_slices = [i for i, m in enumerate(masks) if bool(np.any(m > 10))]
     patient_id = os.path.basename(patient_folder_path)
     return {
         "images": images,
