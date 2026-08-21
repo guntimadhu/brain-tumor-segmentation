@@ -86,7 +86,7 @@ def extract_tumor_contour(mask):
     }
 
 
-def create_tumor_overlay(original_image, tumor_mask, color=(0, 255, 0), alpha=0.4):
+def create_tumor_overlay(original_image, tumor_mask, color=(0, 255, 0), alpha=0.6):
     """Create a colored semi-transparent overlay of the tumor on the original MRI."""
     if len(original_image.shape) == 2:
         rgb = cv2.cvtColor(original_image, cv2.COLOR_GRAY2RGB)
@@ -101,7 +101,7 @@ def create_tumor_overlay(original_image, tumor_mask, color=(0, 255, 0), alpha=0.
 
     contour_info = extract_tumor_contour(tumor_mask)
     if contour_info["contours"]:
-        cv2.drawContours(blended, contour_info["contours"], -1, color, 2)
+        cv2.drawContours(blended, contour_info["contours"], -1, (0, 255, 100), 3)
 
     return blended
 

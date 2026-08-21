@@ -498,6 +498,17 @@ with tab_upload:
             st.caption(f"Slice {st.session_state['slice_idx'] + 1} of {patient['slice_count']}")
 
         idx = st.session_state["slice_idx"]
+
+        # Tumor slice info
+        tumor_slices = patient.get("tumor_slices", [])
+        if patient["has_masks"]:
+            has_tumor_here = idx in tumor_slices
+            if has_tumor_here:
+                st.markdown("This slice has tumor: **✅ Yes**")
+            else:
+                st.markdown("This slice has tumor: **❌ No tumor in this slice**")
+            st.caption(f"Tumor present in **{len(tumor_slices)}** out of **{patient['slice_count']}** slices")
+
         col_img, col_mask = st.columns(2)
         with col_img:
             st.markdown("""<div class="card card-accent"><p style="color:#9ca3af;font-size:0.8rem;margin:0 0 8px;">ORIGINAL MRI</p></div>""", unsafe_allow_html=True)
@@ -505,7 +516,13 @@ with tab_upload:
         with col_mask:
             if patient["has_masks"] and idx < len(patient["masks"]):
                 st.markdown("""<div class="card card-accent"><p style="color:#9ca3af;font-size:0.8rem;margin:0 0 8px;">GROUND TRUTH MASK</p></div>""", unsafe_allow_html=True)
-                show_img(patient["masks"][idx] * 255, f"Mask {idx + 1}")
+                mask_raw = patient["masks"][idx]
+                mask_disp = mask_raw.astype(np.uint8)
+                if mask_disp.max() <= 1:
+                    mask_disp = mask_disp * 255
+                mask_rgb = np.zeros((*mask_disp.shape, 3), dtype=np.uint8)
+                mask_rgb[:, :, 1] = mask_disp
+                st.image(mask_rgb, caption="Ground Truth Mask (green = tumor region)", use_container_width=True, clamp=True)
             else:
                 st.markdown("""
                 <div class="card" style="text-align:center;padding:40px 20px;">
@@ -827,7 +844,7 @@ with tab_eval:
         if run_eval:
             try:
                 pred_masks = st.session_state["pred_masks"]
-                true_masks = [m * 255 for m in patient["masks"]]
+                true_masks = [m if m.max() > 1 else m * 255 for m in patient["masks"]]
                 n = min(len(pred_masks), len(true_masks))
                 with st.spinner("Computing evaluation metrics..."):
                     vol_eval = evaluate_volume_set(pred_masks[:n], true_masks[:n])

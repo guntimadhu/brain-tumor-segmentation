@@ -24,12 +24,14 @@ def load_single_image(image_path):
 
 
 def load_single_mask(mask_path):
-    """Load a TIF/PNG mask as a binary numpy array (0 or 1)."""
+    """Load a TIF/PNG mask as a uint8 array with values 0 or 255."""
     if not os.path.isfile(mask_path):
         raise FileNotFoundError(f"Mask not found: {mask_path}")
     img = Image.open(mask_path).convert("L")
-    arr = np.array(img)
-    return (arr > 0).astype(np.uint8)
+    arr = np.array(img, dtype=np.uint8)
+    if arr.max() <= 1:
+        arr = arr * 255
+    return arr
 
 
 def _image_from_bytes(data):
@@ -42,8 +44,10 @@ def _image_from_bytes(data):
 
 def _mask_from_bytes(data):
     img = Image.open(io.BytesIO(data)).convert("L")
-    arr = np.array(img)
-    return (arr > 0).astype(np.uint8)
+    arr = np.array(img, dtype=np.uint8)
+    if arr.max() <= 1:
+        arr = arr * 255
+    return arr
 
 
 def load_from_uploaded_file(uploaded_file):
@@ -63,6 +67,7 @@ def load_from_uploaded_file(uploaded_file):
         "image_shape": img.shape,
         "image_files": [name],
         "mask_files": [],
+        "tumor_slices": [],
     }
 
 
@@ -97,6 +102,7 @@ def load_from_zip(zip_file):
     images = [_image_from_bytes(file_data[n]) for n in image_names]
     masks = [_mask_from_bytes(file_data[n]) for n in mask_names] if mask_names else []
 
+    tumor_slices = [i for i, m in enumerate(masks) if np.any(m > 0)]
     zip_name = os.path.splitext(zip_file.name)[0]
     return {
         "images": images,
@@ -107,6 +113,7 @@ def load_from_zip(zip_file):
         "image_shape": images[0].shape,
         "image_files": image_names,
         "mask_files": mask_names,
+        "tumor_slices": tumor_slices,
     }
 
 
@@ -144,6 +151,7 @@ def load_patient_data(patient_folder_path):
     images = [load_single_image(os.path.join(patient_folder_path, f)) for f in image_files]
     masks = [load_single_mask(os.path.join(patient_folder_path, f)) for f in mask_files] if mask_files else []
 
+    tumor_slices = [i for i, m in enumerate(masks) if np.any(m > 0)]
     patient_id = os.path.basename(patient_folder_path)
     return {
         "images": images,
@@ -154,6 +162,7 @@ def load_patient_data(patient_folder_path):
         "image_shape": images[0].shape,
         "image_files": image_files,
         "mask_files": mask_files,
+        "tumor_slices": tumor_slices,
     }
 
 
