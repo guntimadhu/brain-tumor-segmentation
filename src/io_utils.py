@@ -117,6 +117,41 @@ def load_from_zip(zip_file):
     }
 
 
+def load_mri_and_mask(mri_file, mask_file=None):
+    """Load separate MRI and optional mask uploads into patient dict."""
+    mri_file.seek(0)
+    mri_data = mri_file.read()
+    if len(mri_data) == 0:
+        raise ValueError(f"MRI file '{mri_file.name}' is empty.")
+    img = _image_from_bytes(mri_data)
+
+    masks = []
+    mask_files_list = []
+    tumor_slices = []
+    if mask_file is not None:
+        mask_file.seek(0)
+        mask_data = mask_file.read()
+        if len(mask_data) > 0:
+            mask_arr = _mask_from_bytes(mask_data)
+            masks = [mask_arr]
+            mask_files_list = [mask_file.name]
+            if np.any(mask_arr > 0):
+                tumor_slices = [0]
+
+    name = mri_file.name
+    return {
+        "images": [img],
+        "masks": masks,
+        "slice_count": 1,
+        "patient_id": os.path.splitext(name)[0],
+        "has_masks": len(masks) > 0,
+        "image_shape": img.shape,
+        "image_files": [name],
+        "mask_files": mask_files_list,
+        "tumor_slices": tumor_slices,
+    }
+
+
 def handle_upload(uploaded_file):
     """Detect file type and route to the correct loader."""
     name = uploaded_file.name.lower()

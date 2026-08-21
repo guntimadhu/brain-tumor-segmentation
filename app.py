@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 import streamlit as st
 
 import os
-from src.io_utils import handle_upload, get_patient_list, load_patient_data
+from src.io_utils import handle_upload, load_mri_and_mask, get_patient_list, load_patient_data
 from src.preprocessing import preprocess_image
 from src.segmentation import segment_tumor_candidate
 from src.morphology import apply_morphological_pipeline
@@ -398,13 +398,6 @@ tab_upload, tab_preprocess, tab_segment, tab_measure, tab_eval, tab_report = st.
 with tab_upload:
     st.markdown("### Upload Brain MRI Data")
 
-    uploaded = st.file_uploader(
-        "Upload a single MRI image or a ZIP file containing multiple slices",
-        type=["tif", "tiff", "jpg", "jpeg", "png", "zip"],
-        help="For evaluation, include _mask files alongside slices in the ZIP.",
-        key="uploader",
-    )
-
     def _reset_downstream():
         for k in ["pp_result", "pp_steps", "pp_config", "seg_result", "morph_result",
                    "tumor_mask", "overlay", "pred_masks", "meas_stats", "meas_df",
@@ -415,23 +408,64 @@ with tab_upload:
             st.session_state[k] = False
         st.session_state["slice_idx"] = 0
 
-    if uploaded is not None:
-        st.write(f"Debug: file type = {uploaded.type}, size = {uploaded.size} bytes")
+    # ── Option 1: Separate MRI + Mask uploaders ──────────────────────────
+    up_col1, up_col2 = st.columns(2)
+    with up_col1:
+        mri_file = st.file_uploader(
+            "Upload MRI Image",
+            type=["tif", "tiff", "jpg", "jpeg", "png"],
+            help="Upload the brain MRI scan",
+            key="mri_uploader",
+        )
+    with up_col2:
+        mask_file = st.file_uploader(
+            "Upload Ground Truth Mask (optional)",
+            type=["tif", "tiff", "jpg", "jpeg", "png"],
+            help="Upload the corresponding _mask file for evaluation",
+            key="mask_uploader",
+        )
 
-        upload_key = f"{uploaded.name}_{uploaded.size}"
-        if st.session_state.get("_last_upload_key") != upload_key:
+    if mri_file is not None:
+        upload_key = f"mri_{mri_file.name}_{mri_file.size}"
+        mask_key = f"mask_{mask_file.name}_{mask_file.size}" if mask_file else "none"
+        combined_key = f"{upload_key}_{mask_key}"
+        if st.session_state.get("_last_upload_key") != combined_key:
             try:
                 with st.spinner("Loading MRI data..."):
-                    patient_data = handle_upload(uploaded)
+                    patient_data = load_mri_and_mask(mri_file, mask_file)
                 st.session_state["patient"] = patient_data
-                st.session_state["_last_upload_key"] = upload_key
+                st.session_state["_last_upload_key"] = combined_key
                 st.session_state["_last_local_key"] = None
                 _reset_downstream()
-                st.success(f"Loaded **{patient_data['slice_count']}** slice(s) from **{patient_data['patient_id']}**")
+                mask_status = "with ground truth mask" if patient_data["has_masks"] else "without mask"
+                st.success(f"Loaded **{patient_data['patient_id']}** ({mask_status})")
             except Exception as e:
                 st.error(f"Failed to load file: {e}")
 
-    # ── Local dataset browser ────────────────────────────────────────────
+    # ── Option 2: ZIP upload ─────────────────────────────────────────────
+    st.divider()
+    zip_file = st.file_uploader(
+        "Or upload ZIP with multiple slices",
+        type=["zip"],
+        help="ZIP containing MRI slices. Include _mask files for evaluation.",
+        key="zip_uploader",
+    )
+
+    if zip_file is not None:
+        zip_key = f"zip_{zip_file.name}_{zip_file.size}"
+        if st.session_state.get("_last_upload_key") != zip_key:
+            try:
+                with st.spinner("Extracting ZIP..."):
+                    patient_data = handle_upload(zip_file)
+                st.session_state["patient"] = patient_data
+                st.session_state["_last_upload_key"] = zip_key
+                st.session_state["_last_local_key"] = None
+                _reset_downstream()
+                st.success(f"Loaded **{patient_data['slice_count']}** slices from **{patient_data['patient_id']}**")
+            except Exception as e:
+                st.error(f"Failed to load ZIP: {e}")
+
+    # ── Option 3: Local dataset browser ──────────────────────────────────
     DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "raw")
     local_patients = get_patient_list(DATA_DIR)
 
@@ -463,24 +497,26 @@ with tab_upload:
                                f"({'with' if patient_data['has_masks'] else 'no'} ground truth masks)")
                 except Exception as e:
                     st.error(f"Failed to load patient: {e}")
-    elif st.session_state["patient"] is None and uploaded is None:
+
+    # ── No data placeholder ──────────────────────────────────────────────
+    if st.session_state["patient"] is None:
         st.markdown("""
         <div class="card" style="text-align:center; padding:50px 20px;">
             <div style="font-size:4rem; margin-bottom:16px;">\U0001f9e0</div>
             <div style="font-size:1.1rem; color:#f9fafb; font-weight:600; margin-bottom:8px;">
-                No MRI data uploaded yet
+                No MRI data loaded yet
             </div>
             <div style="color:#9ca3af; font-size:0.85rem; max-width:500px; margin:auto;">
-                Upload a <b>.tif</b>, <b>.png</b>, or <b>.jpg</b> brain MRI image, or a <b>.zip</b>
-                file containing multiple slices. Or place patient folders in <code>data/raw/</code>
-                to browse locally.
+                Upload an MRI image above (with optional mask), a ZIP of slices,
+                or select a patient from the local dataset.
             </div>
         </div>
         """, unsafe_allow_html=True)
 
+    # ── Display loaded patient ───────────────────────────────────────────
     patient = st.session_state["patient"]
     if patient:
-        # Image info bar
+        st.divider()
         info_cols = st.columns(4)
         info_cols[0].markdown(f"**Filename:** `{patient['image_files'][0]}`")
         info_cols[1].markdown(f"**Dimensions:** {patient['image_shape'][0]} x {patient['image_shape'][1]}")
