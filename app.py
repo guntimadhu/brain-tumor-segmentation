@@ -5,7 +5,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import streamlit as st
 
-from src.io_utils import handle_upload
+import os
+from src.io_utils import handle_upload, get_patient_list, load_patient_data
 from src.preprocessing import preprocess_image
 from src.segmentation import segment_tumor_candidate
 from src.morphology import apply_morphological_pipeline
@@ -404,10 +405,19 @@ with tab_upload:
         key="uploader",
     )
 
+    def _reset_downstream():
+        for k in ["pp_result", "pp_steps", "pp_config", "seg_result", "morph_result",
+                   "tumor_mask", "overlay", "pred_masks", "meas_stats", "meas_df",
+                   "eval_result", "single_eval", "report_text"]:
+            st.session_state[k] = None
+        for k in ["step_preprocessing", "step_segmentation", "step_morphology",
+                   "step_measurements", "step_evaluation"]:
+            st.session_state[k] = False
+        st.session_state["slice_idx"] = 0
+
     if uploaded is not None:
         st.write(f"Debug: file type = {uploaded.type}, size = {uploaded.size} bytes")
 
-        # Only re-process when the uploaded file changes
         upload_key = f"{uploaded.name}_{uploaded.size}"
         if st.session_state.get("_last_upload_key") != upload_key:
             try:
@@ -415,19 +425,45 @@ with tab_upload:
                     patient_data = handle_upload(uploaded)
                 st.session_state["patient"] = patient_data
                 st.session_state["_last_upload_key"] = upload_key
-                # Reset downstream state on new upload
-                for k in ["pp_result", "pp_steps", "pp_config", "seg_result", "morph_result",
-                           "tumor_mask", "overlay", "pred_masks", "meas_stats", "meas_df",
-                           "eval_result", "single_eval", "report_text"]:
-                    st.session_state[k] = None
-                for k in ["step_preprocessing", "step_segmentation", "step_morphology",
-                           "step_measurements", "step_evaluation"]:
-                    st.session_state[k] = False
-                st.session_state["slice_idx"] = 0
+                st.session_state["_last_local_key"] = None
+                _reset_downstream()
                 st.success(f"Loaded **{patient_data['slice_count']}** slice(s) from **{patient_data['patient_id']}**")
             except Exception as e:
                 st.error(f"Failed to load file: {e}")
-    elif st.session_state["patient"] is None:
+
+    # ── Local dataset browser ────────────────────────────────────────────
+    DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "raw")
+    local_patients = get_patient_list(DATA_DIR)
+
+    if local_patients:
+        st.divider()
+        st.subheader("Or load from local dataset")
+
+        patient_names = [os.path.basename(p) for p in local_patients]
+        selected_name = st.selectbox(
+            f"Found **{len(local_patients)}** patients in `data/raw/`",
+            patient_names,
+            index=None,
+            placeholder="Select a patient...",
+            key="local_patient_select",
+        )
+
+        if selected_name is not None:
+            local_key = selected_name
+            if st.session_state.get("_last_local_key") != local_key:
+                try:
+                    folder_path = local_patients[patient_names.index(selected_name)]
+                    with st.spinner(f"Loading {selected_name}..."):
+                        patient_data = load_patient_data(folder_path)
+                    st.session_state["patient"] = patient_data
+                    st.session_state["_last_local_key"] = local_key
+                    st.session_state["_last_upload_key"] = None
+                    _reset_downstream()
+                    st.success(f"Loaded **{patient_data['slice_count']}** slices from **{selected_name}** "
+                               f"({'with' if patient_data['has_masks'] else 'no'} ground truth masks)")
+                except Exception as e:
+                    st.error(f"Failed to load patient: {e}")
+    elif st.session_state["patient"] is None and uploaded is None:
         st.markdown("""
         <div class="card" style="text-align:center; padding:50px 20px;">
             <div style="font-size:4rem; margin-bottom:16px;">\U0001f9e0</div>
@@ -436,7 +472,8 @@ with tab_upload:
             </div>
             <div style="color:#9ca3af; font-size:0.85rem; max-width:500px; margin:auto;">
                 Upload a <b>.tif</b>, <b>.png</b>, or <b>.jpg</b> brain MRI image, or a <b>.zip</b>
-                file containing multiple slices. Include <code>_mask</code> files in the ZIP for evaluation.
+                file containing multiple slices. Or place patient folders in <code>data/raw/</code>
+                to browse locally.
             </div>
         </div>
         """, unsafe_allow_html=True)
