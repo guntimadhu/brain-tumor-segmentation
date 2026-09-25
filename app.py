@@ -7,13 +7,14 @@ import matplotlib.pyplot as plt
 
 import os
 from src.io_utils import handle_upload, load_mri_and_mask, get_patient_list, load_patient_data
-from src.preprocessing import preprocess_image
-from src.segmentation import segment_tumor_candidate
-from src.morphology import apply_morphological_pipeline
+from src.preprocessing import preprocess_image, compare_filters, apply_clahe, normalize_intensity
+from src.segmentation import segment_tumor_candidate, apply_skull_strip_approximation
+from src.morphology import apply_morphological_pipeline, get_morphology_comparison
 from src.postprocessing import (
     filter_components_by_size,
     select_tumor_region,
     create_tumor_overlay,
+    find_connected_components,
 )
 from src.measurements import calculate_tumor_area, estimate_tumor_volume, generate_slice_area_dataframe
 from src.evaluation import (
@@ -116,7 +117,11 @@ hr { border-color: var(--border) !important; }
 DEFAULTS = {
     "patient": None, "slice_idx": 0,
     "pp_result": None, "pp_steps": None,
-    "seg_result": None, "morph_result": None,
+    "filter_comparison": None, "clahe_before": None, "clahe_after": None,
+    "seg_result": None, "seg_adaptive": None, "seg_intensity": None,
+    "skull_mask": None,
+    "morph_result": None, "morph_comparison": None,
+    "cc_info": None, "filtered_mask": None,
     "tumor_mask": None, "overlay": None,
     "all_tumor_masks": None, "all_overlays": None,
     "meas_stats": None, "volume_stats": None, "slice_df": None,
@@ -358,6 +363,21 @@ with tab2:
                         st.session_state["tumor_mask"] = tumor
                         st.session_state["overlay"] = overlay
 
+                        st.session_state["filter_comparison"] = compare_filters(img)
+                        normalized = normalize_intensity(img)
+                        st.session_state["clahe_before"] = normalized
+                        st.session_state["clahe_after"] = apply_clahe(normalized, clip_limit=2.0)
+
+                        st.session_state["skull_mask"] = apply_skull_strip_approximation(pp_result)
+                        st.session_state["seg_adaptive"] = segment_tumor_candidate(pp_result, method="adaptive", params={"block_size": 11, "C": 2})
+                        st.session_state["seg_intensity"] = segment_tumor_candidate(pp_result, method="intensity", params={"low_percentile": 75, "high_percentile": 100})
+
+                        st.session_state["morph_comparison"] = get_morphology_comparison(seg_result["binary_mask"])
+
+                        cc = find_connected_components(morph_result["output_mask"])
+                        st.session_state["cc_info"] = cc
+                        st.session_state["filtered_mask"] = filtered
+
                 st.session_state["all_tumor_masks"] = all_masks
                 st.session_state["all_overlays"] = all_overlays
 
@@ -401,25 +421,121 @@ with tab2:
                 import traceback
                 st.code(traceback.format_exc())
 
-        # Show pipeline for current slice if processed
+        # Show detailed pipeline for current slice if processed
         if st.session_state["processed"] and st.session_state["pp_steps"] is not None:
-            st.divider()
-            st.markdown("#### Preprocessing Pipeline (current slice)")
-            steps = st.session_state["pp_steps"]
-            cols = st.columns(4)
-            with cols[0]: show_img(steps["original"], "1. Original")
-            with cols[1]: show_img(steps["normalized"], "2. Normalized")
-            with cols[2]: show_img(steps["filtered"], "3. Filtered")
-            with cols[3]: show_img(steps["enhanced"], "4. Enhanced")
-
-        if st.session_state["processed"] and st.session_state["tumor_mask"] is not None:
-            st.divider()
-            st.markdown("#### Segmentation Result (current slice)")
-            cols = st.columns(3)
             idx = st.session_state["slice_idx"]
-            with cols[0]: show_img(st.session_state["seg_result"]["binary_mask"], "Otsu Threshold")
-            with cols[1]: show_img(st.session_state["tumor_mask"], "Tumor Mask")
-            with cols[2]: show_img(st.session_state["overlay"], "Overlay")
+            steps = st.session_state["pp_steps"]
+
+            # --- PREPROCESSING ---
+            st.divider()
+            st.markdown("#### 1. Preprocessing Pipeline")
+            cols = st.columns(4)
+            with cols[0]: show_img(steps["original"], "Original")
+            with cols[1]: show_img(steps["normalized"], "Normalized")
+            with cols[2]: show_img(steps["filtered"], "Gaussian Filtered")
+            with cols[3]: show_img(steps["enhanced"], "CLAHE Enhanced")
+
+            # Filter Comparison
+            if st.session_state["filter_comparison"] is not None:
+                st.markdown("##### Filter Comparison")
+                fc = st.session_state["filter_comparison"]
+                fc1, fc2, fc3 = st.columns(3)
+                with fc1: show_img(fc["none"], "No Filter")
+                with fc2: show_img(fc["gaussian"], "Gaussian (σ=1.0)")
+                with fc3: show_img(fc["median"], "Median (k=3)")
+
+            # CLAHE Before/After
+            if st.session_state["clahe_before"] is not None:
+                st.markdown("##### CLAHE Contrast Enhancement")
+                cl1, cl2 = st.columns(2)
+                with cl1: show_img(st.session_state["clahe_before"], "Before CLAHE")
+                with cl2: show_img(st.session_state["clahe_after"], "After CLAHE (clip=2.0)")
+
+            # --- SKULL STRIPPING ---
+            st.divider()
+            st.markdown("#### 2. Skull Stripping")
+            if st.session_state["skull_mask"] is not None:
+                sk1, sk2, sk3 = st.columns(3)
+                with sk1: show_img(steps["enhanced"], "Enhanced MRI")
+                with sk2: show_img(st.session_state["skull_mask"], "Brain Mask")
+                with sk3:
+                    import cv2 as _cv2
+                    brain_only = _cv2.bitwise_and(
+                        steps["enhanced"].astype(np.uint8),
+                        steps["enhanced"].astype(np.uint8),
+                        mask=st.session_state["skull_mask"],
+                    )
+                    show_img(brain_only, "Brain Only (skull removed)")
+
+            # --- SEGMENTATION ---
+            st.divider()
+            st.markdown("#### 3. Segmentation Methods Comparison")
+            seg = st.session_state["seg_result"]
+            seg_a = st.session_state.get("seg_adaptive")
+            seg_i = st.session_state.get("seg_intensity")
+
+            sg1, sg2, sg3 = st.columns(3)
+            with sg1:
+                show_img(seg["binary_mask"], "Otsu Thresholding")
+                if seg.get("threshold_value") is not None:
+                    st.caption(f"Threshold: {seg['threshold_value']}")
+            with sg2:
+                if seg_a is not None:
+                    show_img(seg_a["binary_mask"], "Adaptive Thresholding")
+                    st.caption("Block=11, C=2")
+            with sg3:
+                if seg_i is not None:
+                    show_img(seg_i["binary_mask"], "Intensity Thresholding")
+                    st.caption("Percentile 75-100%")
+
+            # --- MORPHOLOGY ---
+            st.divider()
+            st.markdown("#### 4. Morphological Operations")
+            morph_comp = st.session_state.get("morph_comparison")
+            if morph_comp is not None:
+                mr1, mr2, mr3 = st.columns(3)
+                with mr1: show_img(morph_comp["original"], "Original Mask")
+                with mr2: show_img(morph_comp["erosion"], "Erosion")
+                with mr3: show_img(morph_comp["dilation"], "Dilation")
+
+                mr4, mr5, mr6 = st.columns(3)
+                with mr4: show_img(morph_comp["opening"], "Opening")
+                with mr5: show_img(morph_comp["closing"], "Closing")
+                with mr6: show_img(morph_comp["opening_then_closing"], "Opening → Closing (used)")
+
+            morph_r = st.session_state.get("morph_result")
+            if morph_r is not None:
+                st.caption(f"Noise removed: **{morph_r['noise_removed_pixels']:,}** pixels | "
+                           f"Kernel: {morph_r['config_used']['kernel_size']}x{morph_r['config_used']['kernel_size']} ellipse | "
+                           f"Iterations: {morph_r['config_used']['iterations']}")
+
+            # --- POST-PROCESSING ---
+            st.divider()
+            st.markdown("#### 5. Post-Processing & Region Selection")
+            cc_info = st.session_state.get("cc_info")
+            if cc_info is not None:
+                st.markdown(f"Connected components found: **{cc_info['num_components']}**")
+                if cc_info["component_sizes"]:
+                    sizes = sorted(cc_info["component_sizes"], reverse=True)[:5]
+                    st.caption(f"Top component sizes (px): {', '.join(str(s) for s in sizes)}")
+
+            pp1, pp2, pp3 = st.columns(3)
+            with pp1:
+                if morph_r is not None:
+                    show_img(morph_r["output_mask"], "After Morphology")
+            with pp2:
+                if st.session_state["filtered_mask"] is not None:
+                    show_img(st.session_state["filtered_mask"], "After Size Filter (≥100px)")
+            with pp3:
+                show_img(st.session_state["tumor_mask"], "Final Tumor (largest)")
+
+            # --- FINAL RESULT ---
+            st.divider()
+            st.markdown("#### 6. Final Result")
+            fr1, fr2, fr3 = st.columns(3)
+            with fr1: show_img(patient["images"][idx], "Original MRI")
+            with fr2: show_img(st.session_state["tumor_mask"], "Tumor Mask")
+            with fr3: show_img(st.session_state["overlay"], "Overlay")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
