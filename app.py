@@ -508,84 +508,104 @@ with tab4:
 
     if not st.session_state["processed"]:
         st.warning("Click **Run All Processing** in the **Process** tab first.")
-    elif patient is not None and not patient["has_masks"]:
-        st.warning("No ground truth masks available. Upload data with `_mask` files for evaluation.")
-    elif st.session_state["eval_single"] is not None:
+    elif patient is not None:
         idx = st.session_state["slice_idx"]
-        ev = st.session_state["eval_single"]
+        has_gt = patient["has_masks"]
 
-        # Single slice metrics
-        st.markdown(f"#### Current Slice Metrics (Slice {idx+1})")
-        e1, e2, e3, e4, e5 = st.columns(5)
-        for col, name, key in [
-            (e1, "Dice", "dice"), (e2, "IoU", "iou"),
-            (e3, "Precision", "precision"), (e4, "Recall", "recall"),
-            (e5, "Specificity", "specificity"),
-        ]:
-            val = ev[key]
-            with col:
-                st.metric(name, f"{val:.4f}")
-                color = metric_color(val)
-                st.markdown(f'<div style="height:3px;background:{color};border-radius:2px;margin-top:-8px;"></div>',
-                            unsafe_allow_html=True)
+        if has_gt and st.session_state["eval_single"] is not None:
+            ev = st.session_state["eval_single"]
 
-        st.markdown(f"**{ev['interpretation']}**")
+            st.markdown(f"#### Current Slice Metrics (Slice {idx+1})")
+            e1, e2, e3, e4, e5 = st.columns(5)
+            for col, name, key in [
+                (e1, "Dice", "dice"), (e2, "IoU", "iou"),
+                (e3, "Precision", "precision"), (e4, "Recall", "recall"),
+                (e5, "Specificity", "specificity"),
+            ]:
+                val = ev[key]
+                with col:
+                    st.metric(name, f"{val:.4f}")
+                    color = metric_color(val)
+                    st.markdown(f'<div style="height:3px;background:{color};border-radius:2px;margin-top:-8px;"></div>',
+                                unsafe_allow_html=True)
 
-        # Confusion matrix values
-        st.divider()
-        st.markdown("#### Confusion Matrix")
-        cm1, cm2, cm3, cm4 = st.columns(4)
-        cm1.metric("True Positive", f"{ev['TP']:,}")
-        cm2.metric("False Positive", f"{ev['FP']:,}")
-        cm3.metric("True Negative", f"{ev['TN']:,}")
-        cm4.metric("False Negative", f"{ev['FN']:,}")
+            st.markdown(f"**{ev['interpretation']}**")
 
-        # Charts
-        if st.session_state["eval_chart"] is not None:
             st.divider()
-            st.markdown("#### Evaluation Charts")
-            st.pyplot(st.session_state["eval_chart"])
+            st.markdown("#### Confusion Matrix")
+            cm1, cm2, cm3, cm4 = st.columns(4)
+            cm1.metric("True Positive", f"{ev['TP']:,}")
+            cm2.metric("False Positive", f"{ev['FP']:,}")
+            cm3.metric("True Negative", f"{ev['TN']:,}")
+            cm4.metric("False Negative", f"{ev['FN']:,}")
 
-        # Visual comparison
-        st.divider()
-        st.markdown("#### Visual Comparison")
-        vc1, vc2, vc3 = st.columns(3)
-        with vc1: show_img(patient["images"][idx], "Original MRI")
-        with vc2: show_img(st.session_state["tumor_mask"], "Predicted Mask")
-        with vc3: show_mask_green(patient["masks"][idx], "Ground Truth Mask")
+            if st.session_state["eval_chart"] is not None:
+                st.divider()
+                st.markdown("#### Evaluation Charts")
+                st.pyplot(st.session_state["eval_chart"])
 
-        # Volume-level evaluation
-        if st.session_state["eval_volume"] is not None:
             st.divider()
-            st.markdown("#### Volume-Level Evaluation (All Slices)")
-            ev_v = st.session_state["eval_volume"]
-            vv1, vv2, vv3, vv4 = st.columns(4)
-            vv1.metric("Mean Dice", f"{ev_v['mean_dice']:.4f}")
-            vv2.metric("Std Dice", f"{ev_v['std_dice']:.4f}")
-            vv3.metric("Mean IoU", f"{ev_v['mean_iou']:.4f}")
-            vv4.metric("Overall Dice", f"{ev_v['overall_dice']:.4f}")
+            st.markdown("#### Visual Comparison")
+            vc1, vc2, vc3 = st.columns(3)
+            with vc1: show_img(patient["images"][idx], "Original MRI")
+            with vc2: show_img(st.session_state["tumor_mask"], "Predicted Mask")
+            with vc3:
+                if idx < len(patient["masks"]):
+                    show_mask_green(patient["masks"][idx], "Ground Truth Mask")
 
-            # Per-slice dice chart
-            fig_dice, ax_dice = plt.subplots(figsize=(10, 3))
-            slices_range = list(range(len(ev_v["per_slice_dice"])))
-            ax_dice.bar(slices_range, ev_v["per_slice_dice"], color="#3b82f6", alpha=0.8)
-            ax_dice.axhline(y=ev_v["mean_dice"], color="#00d4aa", linestyle="--", label=f"Mean={ev_v['mean_dice']:.3f}")
-            ax_dice.set_xlabel("Slice Index")
-            ax_dice.set_ylabel("Dice Score")
-            ax_dice.set_title("Per-Slice Dice Coefficient")
-            ax_dice.set_ylim(0, 1.05)
-            ax_dice.legend()
-            ax_dice.set_facecolor("#0a0e1a")
-            fig_dice.patch.set_facecolor("#0a0e1a")
-            ax_dice.tick_params(colors="#9ca3af")
-            ax_dice.xaxis.label.set_color("#9ca3af")
-            ax_dice.yaxis.label.set_color("#9ca3af")
-            ax_dice.title.set_color("#f9fafb")
-            ax_dice.legend(facecolor="#111827", edgecolor="#1f2937", labelcolor="#f9fafb")
-            for spine in ax_dice.spines.values():
-                spine.set_color("#1f2937")
-            plt.tight_layout()
-            st.pyplot(fig_dice)
+            if st.session_state["eval_volume"] is not None:
+                st.divider()
+                st.markdown("#### Volume-Level Evaluation (All Slices)")
+                ev_v = st.session_state["eval_volume"]
+                vv1, vv2, vv3, vv4 = st.columns(4)
+                vv1.metric("Mean Dice", f"{ev_v['mean_dice']:.4f}")
+                vv2.metric("Std Dice", f"{ev_v['std_dice']:.4f}")
+                vv3.metric("Mean IoU", f"{ev_v['mean_iou']:.4f}")
+                vv4.metric("Overall Dice", f"{ev_v['overall_dice']:.4f}")
+
+                fig_dice, ax_dice = plt.subplots(figsize=(10, 3))
+                slices_range = list(range(len(ev_v["per_slice_dice"])))
+                ax_dice.bar(slices_range, ev_v["per_slice_dice"], color="#3b82f6", alpha=0.8)
+                ax_dice.axhline(y=ev_v["mean_dice"], color="#00d4aa", linestyle="--", label=f"Mean={ev_v['mean_dice']:.3f}")
+                ax_dice.set_xlabel("Slice Index")
+                ax_dice.set_ylabel("Dice Score")
+                ax_dice.set_title("Per-Slice Dice Coefficient")
+                ax_dice.set_ylim(0, 1.05)
+                ax_dice.legend()
+                ax_dice.set_facecolor("#0a0e1a")
+                fig_dice.patch.set_facecolor("#0a0e1a")
+                ax_dice.tick_params(colors="#9ca3af")
+                ax_dice.xaxis.label.set_color("#9ca3af")
+                ax_dice.yaxis.label.set_color("#9ca3af")
+                ax_dice.title.set_color("#f9fafb")
+                ax_dice.legend(facecolor="#111827", edgecolor="#1f2937", labelcolor="#f9fafb")
+                for spine in ax_dice.spines.values():
+                    spine.set_color("#1f2937")
+                plt.tight_layout()
+                st.pyplot(fig_dice)
+
+        else:
+            st.markdown("#### Segmentation Results (No Ground Truth)")
+            st.info("Upload a ground truth mask for full evaluation with Dice, IoU, Precision, Recall, and Specificity metrics.")
+
+            st.divider()
+            st.markdown("#### Detected Tumor Summary")
+            all_masks = st.session_state["all_tumor_masks"]
+            if all_masks:
+                total_px = sum(int(np.count_nonzero(m)) for m in all_masks)
+                affected = sum(1 for m in all_masks if np.count_nonzero(m) > 0)
+                s1, s2, s3 = st.columns(3)
+                s1.metric("Total Tumor Pixels", f"{total_px:,}")
+                s2.metric("Affected Slices", f"{affected}/{len(all_masks)}")
+                s3.metric("Detection Rate", f"{affected/len(all_masks)*100:.1f}%")
+
+            st.divider()
+            st.markdown("#### Visual Result")
+            vr1, vr2 = st.columns(2)
+            with vr1: show_img(patient["images"][idx], "Original MRI")
+            with vr2:
+                if st.session_state["overlay"] is not None:
+                    show_img(st.session_state["overlay"], "Segmentation Overlay")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -598,9 +618,7 @@ with tab5:
     if not st.session_state["processed"]:
         st.warning("Click **Run All Processing** in the **Process** tab first.")
     else:
-        gen = st.button("▶ Generate Report", key="btn_report", use_container_width=True)
-
-        if gen:
+        if st.session_state["report_text"] is None:
             L = []
             L.append("=" * 65)
             L.append("  BRAINSCAN AI — ANALYSIS REPORT")
