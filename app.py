@@ -485,7 +485,10 @@ with tab3:
         # Browse all slices
         st.divider()
         st.markdown("#### Browse All Slice Results")
-        browse_idx = st.slider("Slice", 0, patient["slice_count"] - 1, idx, key="browse_sl")
+        if patient["slice_count"] > 1:
+            browse_idx = st.slider("Slice", 0, patient["slice_count"] - 1, idx, key="browse_sl")
+        else:
+            browse_idx = 0
         bc1, bc2, bc3 = st.columns(3)
         with bc1: show_img(patient["images"][browse_idx], f"MRI Slice {browse_idx+1}")
         with bc2:
