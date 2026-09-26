@@ -7,20 +7,16 @@ import matplotlib.pyplot as plt
 
 import os
 from src.io_utils import handle_upload, load_mri_and_mask, get_patient_list, load_patient_data
-from src.preprocessing import preprocess_image, compare_filters, apply_clahe, normalize_intensity
-from src.segmentation import segment_tumor_candidate, apply_skull_strip_approximation
-from src.morphology import apply_morphological_pipeline, get_morphology_comparison
+from src.preprocessing import preprocess_image
+from src.segmentation import segment_tumor_candidate
+from src.morphology import apply_morphological_pipeline
 from src.postprocessing import (
     filter_components_by_size,
     select_tumor_region,
     create_tumor_overlay,
-    find_connected_components,
 )
-from src.measurements import calculate_tumor_area, estimate_tumor_volume, generate_slice_area_dataframe
-from src.evaluation import (
-    dice_coefficient, iou_score, evaluate_segmentation,
-    evaluate_volume_set, plot_evaluation_charts,
-)
+from src.measurements import calculate_tumor_area
+from src.evaluation import evaluate_segmentation, plot_evaluation_charts
 
 st.set_page_config(
     page_title="BrainScan AI",
@@ -117,15 +113,10 @@ hr { border-color: var(--border) !important; }
 DEFAULTS = {
     "patient": None, "slice_idx": 0,
     "pp_result": None, "pp_steps": None,
-    "filter_comparison": None, "clahe_before": None, "clahe_after": None,
-    "seg_result": None, "seg_adaptive": None, "seg_intensity": None,
-    "skull_mask": None,
-    "morph_result": None, "morph_comparison": None,
-    "cc_info": None, "filtered_mask": None,
+    "seg_result": None, "morph_result": None,
     "tumor_mask": None, "overlay": None,
-    "all_tumor_masks": None, "all_overlays": None,
-    "meas_stats": None, "volume_stats": None, "slice_df": None,
-    "eval_single": None, "eval_volume": None, "eval_chart": None,
+    "meas_stats": None,
+    "eval_single": None, "eval_chart": None,
     "report_text": None, "processed": False,
 }
 for k, v in DEFAULTS.items():
@@ -307,126 +298,84 @@ with tab1:
             ts = patient.get("tumor_slices", [])
             st.caption(f"Tumor in **{len(ts)}** of **{patient['slice_count']}** slices")
 
-        st.success("Data loaded! Go to **Process** tab and click **Run All**.")
+        st.success("Data loaded! Go to **Process** tab and click **Run Processing**.")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# TAB 2 — PROCESS (one button does everything)
+# TAB 2 — PROCESS (single slice)
 # ═══════════════════════════════════════════════════════════════════════════
 with tab2:
-    st.markdown("### Process All Slices")
+    st.markdown("### Process Current Slice")
     patient = st.session_state["patient"]
 
     if patient is None:
         st.warning("Upload MRI data in the **Upload** tab first.")
     else:
-        st.markdown(f"**{patient['slice_count']}** slices will be processed automatically.")
+        idx = st.session_state["slice_idx"]
+        st.markdown(f"Processing **Slice {idx+1}** of {patient['slice_count']}")
 
-        run = st.button("▶ Run All Processing", key="btn_run", use_container_width=True)
+        run = st.button("▶ Run Processing", key="btn_run", use_container_width=True)
 
         if run:
-            n = patient["slice_count"]
-            progress = st.progress(0, text="Starting...")
-            all_masks = []
-            all_overlays = []
-
             try:
-                for i in range(n):
-                    pct = int((i / n) * 100)
-                    progress.progress(pct, text=f"Processing slice {i+1}/{n}...")
+                with st.spinner("Processing..."):
+                    img = patient["images"][idx]
 
-                    img = patient["images"][i]
-
+                    # 1. Preprocessing
                     pp_config = {
                         "normalize": True, "filter_type": "gaussian",
                         "sigma": 1.0, "kernel_size": 3,
                         "clahe": True, "clip_limit": 2.0,
                     }
                     pp_result, pp_steps = preprocess_image(img, pp_config)
+                    st.session_state["pp_result"] = pp_result
+                    st.session_state["pp_steps"] = pp_steps
 
+                    # 2. Segmentation
                     seg_result = segment_tumor_candidate(pp_result, method="otsu", params={})
+                    st.session_state["seg_result"] = seg_result
 
+                    # 3. Morphology
                     morph_config = {"operation": "opening_then_closing", "kernel_size": 5, "iterations": 1}
                     morph_result = apply_morphological_pipeline(seg_result["binary_mask"], morph_config)
+                    st.session_state["morph_result"] = morph_result
+
+                    # 4. Post-processing
                     filtered = filter_components_by_size(morph_result["output_mask"], min_area=100)
                     tumor = select_tumor_region(filtered, strategy="largest", min_area=50)
                     overlay = create_tumor_overlay(img, tumor)
+                    st.session_state["tumor_mask"] = tumor
+                    st.session_state["overlay"] = overlay
 
-                    all_masks.append(tumor)
-                    all_overlays.append(overlay)
+                    # 5. Measurements
+                    area = calculate_tumor_area(tumor, pixel_spacing_mm=1.0)
+                    st.session_state["meas_stats"] = area
 
-                    if i == st.session_state["slice_idx"]:
-                        st.session_state["pp_result"] = pp_result
-                        st.session_state["pp_steps"] = pp_steps
-                        st.session_state["seg_result"] = seg_result
-                        st.session_state["morph_result"] = morph_result
-                        st.session_state["tumor_mask"] = tumor
-                        st.session_state["overlay"] = overlay
+                    # 6. Evaluation
+                    if patient["has_masks"] and idx < len(patient["masks"]):
+                        gt = patient["masks"][idx].copy()
+                        if gt.max() <= 1:
+                            gt = (gt * 255).astype(np.uint8)
+                        ev = evaluate_segmentation(tumor, gt)
+                        st.session_state["eval_single"] = ev
+                        fig = plot_evaluation_charts(ev)
+                        st.session_state["eval_chart"] = fig
 
-                        st.session_state["filter_comparison"] = compare_filters(img)
-                        normalized = normalize_intensity(img)
-                        st.session_state["clahe_before"] = normalized
-                        st.session_state["clahe_after"] = apply_clahe(normalized, clip_limit=2.0)
+                    st.session_state["processed"] = True
+                    st.session_state["report_text"] = None
 
-                        st.session_state["skull_mask"] = apply_skull_strip_approximation(pp_result)
-                        st.session_state["seg_adaptive"] = segment_tumor_candidate(pp_result, method="adaptive", params={"block_size": 11, "C": 2})
-                        st.session_state["seg_intensity"] = segment_tumor_candidate(pp_result, method="intensity", params={"low_percentile": 75, "high_percentile": 100})
-
-                        st.session_state["morph_comparison"] = get_morphology_comparison(seg_result["binary_mask"])
-
-                        cc = find_connected_components(morph_result["output_mask"])
-                        st.session_state["cc_info"] = cc
-                        st.session_state["filtered_mask"] = filtered
-
-                st.session_state["all_tumor_masks"] = all_masks
-                st.session_state["all_overlays"] = all_overlays
-
-                # Measurements
-                progress.progress(85, text="Calculating measurements...")
-                idx = st.session_state["slice_idx"]
-                area = calculate_tumor_area(all_masks[idx], pixel_spacing_mm=1.0)
-                st.session_state["meas_stats"] = area
-
-                vol = estimate_tumor_volume(all_masks, pixel_spacing_mm=1.0, slice_thickness_mm=5.0)
-                st.session_state["volume_stats"] = vol
-
-                sdf = generate_slice_area_dataframe(all_masks, pixel_spacing_mm=1.0)
-                st.session_state["slice_df"] = sdf
-
-                # Evaluation
-                if patient["has_masks"]:
-                    progress.progress(92, text="Evaluating...")
-                    gt_masks_scaled = []
-                    for m in patient["masks"]:
-                        gm = m.copy()
-                        if gm.max() <= 1:
-                            gm = (gm * 255).astype(np.uint8)
-                        gt_masks_scaled.append(gm)
-
-                    ev_single = evaluate_segmentation(all_masks[idx], gt_masks_scaled[idx])
-                    st.session_state["eval_single"] = ev_single
-
-                    ev_vol = evaluate_volume_set(all_masks, gt_masks_scaled)
-                    st.session_state["eval_volume"] = ev_vol
-
-                    fig = plot_evaluation_charts(ev_single)
-                    st.session_state["eval_chart"] = fig
-
-                st.session_state["processed"] = True
-                progress.progress(100, text="Done!")
-                st.success(f"All **{n}** slices processed! Check **Measurements**, **Evaluation**, and **Report** tabs.")
+                st.success("Processing complete! Check **Measurements**, **Evaluation**, and **Report** tabs.")
 
             except Exception as e:
                 st.error(f"Processing failed: {e}")
                 import traceback
                 st.code(traceback.format_exc())
 
-        # Show detailed pipeline for current slice if processed
+        # Show pipeline results
         if st.session_state["processed"] and st.session_state["pp_steps"] is not None:
-            idx = st.session_state["slice_idx"]
             steps = st.session_state["pp_steps"]
 
-            # --- PREPROCESSING ---
+            # Preprocessing
             st.divider()
             st.markdown("#### 1. Preprocessing Pipeline")
             cols = st.columns(4)
@@ -435,103 +384,31 @@ with tab2:
             with cols[2]: show_img(steps["filtered"], "Gaussian Filtered")
             with cols[3]: show_img(steps["enhanced"], "CLAHE Enhanced")
 
-            # Filter Comparison
-            if st.session_state["filter_comparison"] is not None:
-                st.markdown("##### Filter Comparison")
-                fc = st.session_state["filter_comparison"]
-                fc1, fc2, fc3 = st.columns(3)
-                with fc1: show_img(fc["none"], "No Filter")
-                with fc2: show_img(fc["gaussian"], "Gaussian (σ=1.0)")
-                with fc3: show_img(fc["median"], "Median (k=3)")
-
-            # CLAHE Before/After
-            if st.session_state["clahe_before"] is not None:
-                st.markdown("##### CLAHE Contrast Enhancement")
-                cl1, cl2 = st.columns(2)
-                with cl1: show_img(st.session_state["clahe_before"], "Before CLAHE")
-                with cl2: show_img(st.session_state["clahe_after"], "After CLAHE (clip=2.0)")
-
-            # --- SKULL STRIPPING ---
+            # Segmentation
             st.divider()
-            st.markdown("#### 2. Skull Stripping")
-            if st.session_state["skull_mask"] is not None:
-                sk1, sk2, sk3 = st.columns(3)
-                with sk1: show_img(steps["enhanced"], "Enhanced MRI")
-                with sk2: show_img(st.session_state["skull_mask"], "Brain Mask")
-                with sk3:
-                    import cv2 as _cv2
-                    brain_only = _cv2.bitwise_and(
-                        steps["enhanced"].astype(np.uint8),
-                        steps["enhanced"].astype(np.uint8),
-                        mask=st.session_state["skull_mask"],
-                    )
-                    show_img(brain_only, "Brain Only (skull removed)")
-
-            # --- SEGMENTATION ---
-            st.divider()
-            st.markdown("#### 3. Segmentation Methods Comparison")
+            st.markdown("#### 2. Segmentation (Otsu Thresholding)")
             seg = st.session_state["seg_result"]
-            seg_a = st.session_state.get("seg_adaptive")
-            seg_i = st.session_state.get("seg_intensity")
-
-            sg1, sg2, sg3 = st.columns(3)
+            sg1, sg2 = st.columns(2)
             with sg1:
-                show_img(seg["binary_mask"], "Otsu Thresholding")
+                show_img(seg["binary_mask"], "Otsu Threshold Result")
                 if seg.get("threshold_value") is not None:
-                    st.caption(f"Threshold: {seg['threshold_value']}")
+                    st.caption(f"Threshold value: {seg['threshold_value']}")
             with sg2:
-                if seg_a is not None:
-                    show_img(seg_a["binary_mask"], "Adaptive Thresholding")
-                    st.caption("Block=11, C=2")
-            with sg3:
-                if seg_i is not None:
-                    show_img(seg_i["binary_mask"], "Intensity Thresholding")
-                    st.caption("Percentile 75-100%")
+                show_img(seg["brain_mask"], "Brain Mask (skull stripped)")
 
-            # --- MORPHOLOGY ---
+            # Morphology
             st.divider()
-            st.markdown("#### 4. Morphological Operations")
-            morph_comp = st.session_state.get("morph_comparison")
-            if morph_comp is not None:
-                mr1, mr2, mr3 = st.columns(3)
-                with mr1: show_img(morph_comp["original"], "Original Mask")
-                with mr2: show_img(morph_comp["erosion"], "Erosion")
-                with mr3: show_img(morph_comp["dilation"], "Dilation")
+            st.markdown("#### 3. Morphological Operations")
+            morph_r = st.session_state["morph_result"]
+            mo1, mo2 = st.columns(2)
+            with mo1: show_img(morph_r["input_mask"], "Before Morphology")
+            with mo2: show_img(morph_r["output_mask"], "After Opening → Closing")
+            st.caption(f"Noise removed: **{morph_r['noise_removed_pixels']:,}** pixels | "
+                       f"Kernel: {morph_r['config_used']['kernel_size']}x{morph_r['config_used']['kernel_size']} ellipse")
 
-                mr4, mr5, mr6 = st.columns(3)
-                with mr4: show_img(morph_comp["opening"], "Opening")
-                with mr5: show_img(morph_comp["closing"], "Closing")
-                with mr6: show_img(morph_comp["opening_then_closing"], "Opening → Closing (used)")
-
-            morph_r = st.session_state.get("morph_result")
-            if morph_r is not None:
-                st.caption(f"Noise removed: **{morph_r['noise_removed_pixels']:,}** pixels | "
-                           f"Kernel: {morph_r['config_used']['kernel_size']}x{morph_r['config_used']['kernel_size']} ellipse | "
-                           f"Iterations: {morph_r['config_used']['iterations']}")
-
-            # --- POST-PROCESSING ---
+            # Final Result
             st.divider()
-            st.markdown("#### 5. Post-Processing & Region Selection")
-            cc_info = st.session_state.get("cc_info")
-            if cc_info is not None:
-                st.markdown(f"Connected components found: **{cc_info['num_components']}**")
-                if cc_info["component_sizes"]:
-                    sizes = sorted(cc_info["component_sizes"], reverse=True)[:5]
-                    st.caption(f"Top component sizes (px): {', '.join(str(s) for s in sizes)}")
-
-            pp1, pp2, pp3 = st.columns(3)
-            with pp1:
-                if morph_r is not None:
-                    show_img(morph_r["output_mask"], "After Morphology")
-            with pp2:
-                if st.session_state["filtered_mask"] is not None:
-                    show_img(st.session_state["filtered_mask"], "After Size Filter (≥100px)")
-            with pp3:
-                show_img(st.session_state["tumor_mask"], "Final Tumor (largest)")
-
-            # --- FINAL RESULT ---
-            st.divider()
-            st.markdown("#### 6. Final Result")
+            st.markdown("#### 4. Final Result")
             fr1, fr2, fr3 = st.columns(3)
             with fr1: show_img(patient["images"][idx], "Original MRI")
             with fr2: show_img(st.session_state["tumor_mask"], "Tumor Mask")
@@ -539,99 +416,60 @@ with tab2:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# TAB 3 — MEASUREMENTS
+# TAB 3 — MEASUREMENTS (single slice area only)
 # ═══════════════════════════════════════════════════════════════════════════
 with tab3:
     st.markdown("### Tumor Measurements")
     patient = st.session_state["patient"]
 
     if not st.session_state["processed"]:
-        st.warning("Click **Run All Processing** in the **Process** tab first.")
+        st.warning("Click **Run Processing** in the **Process** tab first.")
     else:
         idx = st.session_state["slice_idx"]
 
-        # Single slice area
-        st.markdown("#### Current Slice Area")
+        st.markdown(f"#### Slice {idx+1} Tumor Area")
         area = st.session_state["meas_stats"]
         m1, m2, m3 = st.columns(3)
         m1.metric("Tumor Pixels", f"{area['tumor_pixels']:,}")
         m2.metric("Tumor Area", f"{area['tumor_area_mm2']:.1f} mm²")
         m3.metric("Tumor %", f"{area['tumor_percentage']:.4f}%")
 
+        st.divider()
         cols = st.columns(3)
         with cols[0]: show_img(patient["images"][idx], "Original MRI")
         with cols[1]: show_img(st.session_state["tumor_mask"], "Detected Tumor")
         with cols[2]: show_img(st.session_state["overlay"], "Overlay")
 
-        # Volume estimation
         st.divider()
-        st.markdown("#### Volume Estimation (All Slices)")
-        vol = st.session_state["volume_stats"]
-        v1, v2, v3, v4 = st.columns(4)
-        v1.metric("Volume", f"{vol['tumor_volume_cm3']:.2f} cm³")
-        v2.metric("Total Voxels", f"{vol['total_tumor_voxels']:,}")
-        v3.metric("Affected Slices", f"{vol['affected_slices']}/{vol['total_slices']}")
-        v4.metric("Volume (mm³)", f"{vol['tumor_volume_mm3']:.0f}")
-
-        st.caption(vol["note"])
-
-        # Per-slice table
-        st.divider()
-        st.markdown("#### Per-Slice Tumor Data")
-        sdf = st.session_state["slice_df"]
-        st.dataframe(sdf, use_container_width=True, hide_index=True)
-
-        # Area chart
-        fig_area, ax_area = plt.subplots(figsize=(10, 3))
-        ax_area.bar(sdf["Slice"], sdf["Area mm2"], color="#00d4aa", alpha=0.8)
-        ax_area.set_xlabel("Slice Index")
-        ax_area.set_ylabel("Tumor Area (mm²)")
-        ax_area.set_title("Tumor Area per Slice")
-        ax_area.set_facecolor("#0a0e1a")
-        fig_area.patch.set_facecolor("#0a0e1a")
-        ax_area.tick_params(colors="#9ca3af")
-        ax_area.xaxis.label.set_color("#9ca3af")
-        ax_area.yaxis.label.set_color("#9ca3af")
-        ax_area.title.set_color("#f9fafb")
-        for spine in ax_area.spines.values():
-            spine.set_color("#1f2937")
-        plt.tight_layout()
-        st.pyplot(fig_area)
-
-        # Browse all slices
-        st.divider()
-        st.markdown("#### Browse All Slice Results")
-        if patient["slice_count"] > 1:
-            browse_idx = st.slider("Slice", 0, patient["slice_count"] - 1, idx, key="browse_sl")
-        else:
-            browse_idx = 0
-        bc1, bc2, bc3 = st.columns(3)
-        with bc1: show_img(patient["images"][browse_idx], f"MRI Slice {browse_idx+1}")
-        with bc2:
-            if st.session_state["all_tumor_masks"]:
-                show_img(st.session_state["all_tumor_masks"][browse_idx], "Tumor Mask")
-        with bc3:
-            if st.session_state["all_overlays"]:
-                show_img(st.session_state["all_overlays"][browse_idx], "Overlay")
+        st.markdown("#### Measurement Details")
+        st.markdown(f"""
+        | Metric | Value |
+        |--------|-------|
+        | Total Image Pixels | {area['total_pixels']:,} |
+        | Tumor Pixels | {area['tumor_pixels']:,} |
+        | Tumor Area | {area['tumor_area_mm2']:.2f} mm² |
+        | Tumor Area | {area['tumor_area_cm2']:.4f} cm² |
+        | Tumor Percentage | {area['tumor_percentage']:.4f}% |
+        | Pixel Spacing | 1.0 mm (assumed) |
+        """)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# TAB 4 — EVALUATION
+# TAB 4 — EVALUATION (basic metrics)
 # ═══════════════════════════════════════════════════════════════════════════
 with tab4:
     st.markdown("### Segmentation Evaluation")
     patient = st.session_state["patient"]
 
     if not st.session_state["processed"]:
-        st.warning("Click **Run All Processing** in the **Process** tab first.")
+        st.warning("Click **Run Processing** in the **Process** tab first.")
     elif patient is not None:
         idx = st.session_state["slice_idx"]
-        has_gt = patient["has_masks"]
 
-        if has_gt and st.session_state["eval_single"] is not None:
+        if patient["has_masks"] and st.session_state["eval_single"] is not None:
             ev = st.session_state["eval_single"]
 
-            st.markdown(f"#### Current Slice Metrics (Slice {idx+1})")
+            st.markdown(f"#### Slice {idx+1} Metrics")
             e1, e2, e3, e4, e5 = st.columns(5)
             for col, name, key in [
                 (e1, "Dice", "dice"), (e2, "IoU", "iou"),
@@ -647,6 +485,7 @@ with tab4:
 
             st.markdown(f"**{ev['interpretation']}**")
 
+            # Confusion matrix
             st.divider()
             st.markdown("#### Confusion Matrix")
             cm1, cm2, cm3, cm4 = st.columns(4)
@@ -655,11 +494,13 @@ with tab4:
             cm3.metric("True Negative", f"{ev['TN']:,}")
             cm4.metric("False Negative", f"{ev['FN']:,}")
 
+            # Charts
             if st.session_state["eval_chart"] is not None:
                 st.divider()
                 st.markdown("#### Evaluation Charts")
                 st.pyplot(st.session_state["eval_chart"])
 
+            # Visual comparison
             st.divider()
             st.markdown("#### Visual Comparison")
             vc1, vc2, vc3 = st.columns(3)
@@ -669,54 +510,17 @@ with tab4:
                 if idx < len(patient["masks"]):
                     show_mask_green(patient["masks"][idx], "Ground Truth Mask")
 
-            if st.session_state["eval_volume"] is not None:
-                st.divider()
-                st.markdown("#### Volume-Level Evaluation (All Slices)")
-                ev_v = st.session_state["eval_volume"]
-                vv1, vv2, vv3, vv4 = st.columns(4)
-                vv1.metric("Mean Dice", f"{ev_v['mean_dice']:.4f}")
-                vv2.metric("Std Dice", f"{ev_v['std_dice']:.4f}")
-                vv3.metric("Mean IoU", f"{ev_v['mean_iou']:.4f}")
-                vv4.metric("Overall Dice", f"{ev_v['overall_dice']:.4f}")
-
-                fig_dice, ax_dice = plt.subplots(figsize=(10, 3))
-                slices_range = list(range(len(ev_v["per_slice_dice"])))
-                ax_dice.bar(slices_range, ev_v["per_slice_dice"], color="#3b82f6", alpha=0.8)
-                ax_dice.axhline(y=ev_v["mean_dice"], color="#00d4aa", linestyle="--", label=f"Mean={ev_v['mean_dice']:.3f}")
-                ax_dice.set_xlabel("Slice Index")
-                ax_dice.set_ylabel("Dice Score")
-                ax_dice.set_title("Per-Slice Dice Coefficient")
-                ax_dice.set_ylim(0, 1.05)
-                ax_dice.legend()
-                ax_dice.set_facecolor("#0a0e1a")
-                fig_dice.patch.set_facecolor("#0a0e1a")
-                ax_dice.tick_params(colors="#9ca3af")
-                ax_dice.xaxis.label.set_color("#9ca3af")
-                ax_dice.yaxis.label.set_color("#9ca3af")
-                ax_dice.title.set_color("#f9fafb")
-                ax_dice.legend(facecolor="#111827", edgecolor="#1f2937", labelcolor="#f9fafb")
-                for spine in ax_dice.spines.values():
-                    spine.set_color("#1f2937")
-                plt.tight_layout()
-                st.pyplot(fig_dice)
-
         else:
-            st.markdown("#### Segmentation Results (No Ground Truth)")
-            st.info("Upload a ground truth mask for full evaluation with Dice, IoU, Precision, Recall, and Specificity metrics.")
+            st.info("Upload a ground truth mask for evaluation metrics (Dice, IoU, Precision, Recall, Specificity).")
 
             st.divider()
-            st.markdown("#### Detected Tumor Summary")
-            all_masks = st.session_state["all_tumor_masks"]
-            if all_masks:
-                total_px = sum(int(np.count_nonzero(m)) for m in all_masks)
-                affected = sum(1 for m in all_masks if np.count_nonzero(m) > 0)
-                s1, s2, s3 = st.columns(3)
-                s1.metric("Total Tumor Pixels", f"{total_px:,}")
-                s2.metric("Affected Slices", f"{affected}/{len(all_masks)}")
-                s3.metric("Detection Rate", f"{affected/len(all_masks)*100:.1f}%")
+            st.markdown("#### Segmentation Result")
+            area = st.session_state.get("meas_stats")
+            if area:
+                s1, s2 = st.columns(2)
+                s1.metric("Tumor Pixels Detected", f"{area['tumor_pixels']:,}")
+                s2.metric("Tumor Coverage", f"{area['tumor_percentage']:.4f}%")
 
-            st.divider()
-            st.markdown("#### Visual Result")
             vr1, vr2 = st.columns(2)
             with vr1: show_img(patient["images"][idx], "Original MRI")
             with vr2:
@@ -732,16 +536,18 @@ with tab5:
     patient = st.session_state["patient"]
 
     if not st.session_state["processed"]:
-        st.warning("Click **Run All Processing** in the **Process** tab first.")
+        st.warning("Click **Run Processing** in the **Process** tab first.")
     else:
         if st.session_state["report_text"] is None:
+            idx = st.session_state["slice_idx"]
             L = []
             L.append("=" * 65)
-            L.append("  BRAINSCAN AI — ANALYSIS REPORT")
+            L.append("  BRAINSCAN AI — ANALYSIS REPORT (Phase 1)")
             L.append("=" * 65)
             L.append(f"  Patient ID      : {patient['patient_id']}")
             L.append(f"  Generated       : {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
             L.append(f"  Total Slices    : {patient['slice_count']}")
+            L.append(f"  Analyzed Slice  : {idx + 1}")
             L.append(f"  Image Size      : {patient['image_shape'][0]} x {patient['image_shape'][1]}")
             L.append(f"  Ground Truth    : {'Available' if patient['has_masks'] else 'Not available'}")
             L.append("")
@@ -754,8 +560,8 @@ with tab5:
             seg = st.session_state.get("seg_result")
             if seg:
                 L.append(f"  Threshold       : {seg.get('threshold_value', 'N/A')}")
-            L.append("  Morphology      : Opening then closing (5x5, 1 iter)")
-            L.append("  Post-processing : Component filtering + largest region")
+            L.append("  Morphology      : Opening then closing (5x5 ellipse, 1 iter)")
+            L.append("  Post-processing : Component filtering (>=100px) + largest region")
             L.append("")
 
             L.append("-" * 65)
@@ -763,14 +569,9 @@ with tab5:
             L.append("-" * 65)
             area = st.session_state.get("meas_stats")
             if area:
-                L.append(f"  Slice {st.session_state['slice_idx']+1} Area : {area['tumor_area_mm2']:.1f} mm2 "
-                         f"({area['tumor_pixels']:,} px, {area['tumor_percentage']:.4f}%)")
-            vol = st.session_state.get("volume_stats")
-            if vol:
-                L.append(f"  Total Volume    : {vol['tumor_volume_cm3']:.2f} cm3 ({vol['tumor_volume_mm3']:.0f} mm3)")
-                L.append(f"  Total Voxels    : {vol['total_tumor_voxels']:,}")
-                L.append(f"  Affected Slices : {vol['affected_slices']}/{vol['total_slices']}")
-                L.append(f"  Spacing         : {vol['pixel_spacing_mm']} mm px, {vol['slice_thickness_mm']} mm slice")
+                L.append(f"  Tumor Pixels    : {area['tumor_pixels']:,}")
+                L.append(f"  Tumor Area      : {area['tumor_area_mm2']:.1f} mm2 ({area['tumor_area_cm2']:.4f} cm2)")
+                L.append(f"  Tumor %         : {area['tumor_percentage']:.4f}%")
             L.append("")
 
             L.append("-" * 65)
@@ -784,13 +585,9 @@ with tab5:
                 L.append(f"  Recall          : {ev['recall']:.4f}")
                 L.append(f"  Specificity     : {ev['specificity']:.4f}")
                 L.append(f"  TP={ev['TP']:,}  FP={ev['FP']:,}  TN={ev['TN']:,}  FN={ev['FN']:,}")
-            ev_v = st.session_state.get("eval_volume")
-            if ev_v:
-                L.append(f"  Mean Dice (vol) : {ev_v['mean_dice']:.4f} +/- {ev_v['std_dice']:.4f}")
-                L.append(f"  Mean IoU (vol)  : {ev_v['mean_iou']:.4f}")
-                L.append(f"  Overall Dice    : {ev_v['overall_dice']:.4f}")
-            if not ev and not ev_v:
-                L.append("  (no ground truth masks)")
+                L.append(f"  {ev['interpretation']}")
+            else:
+                L.append("  (no ground truth mask provided)")
             L.append("")
 
             L.append("-" * 65)
@@ -798,29 +595,19 @@ with tab5:
             L.append("-" * 65)
             L.append("  Classical image processing (no ML/DL)")
             L.append("  Otsu thresholding for segmentation")
-            L.append("  Morphological operations for refinement")
-            L.append("  Voxel-count volume estimation (pseudo-3D)")
+            L.append("  Morphological operations for noise removal")
+            L.append("  Connected component analysis for region selection")
             L.append("")
             L.append("=" * 65)
-            L.append("  Generated by BrainScan AI")
+            L.append("  Generated by BrainScan AI — Phase 1")
             L.append("=" * 65)
 
             st.session_state["report_text"] = "\n".join(L)
-            st.success("Report generated!")
 
         if st.session_state["report_text"]:
             st.code(st.session_state["report_text"], language=None)
 
-            c1, c2 = st.columns(2)
-            with c1:
-                st.download_button("\U0001f4c4 Download TXT Report",
-                    st.session_state["report_text"],
-                    f"brainscan_report_{patient['patient_id']}.txt",
-                    "text/plain", use_container_width=True)
-            with c2:
-                csv_data = st.session_state["slice_df"].to_csv(index=False) if st.session_state["slice_df"] is not None else ""
-                if csv_data:
-                    st.download_button("\U0001f4ca Download Slice Data CSV",
-                        csv_data,
-                        f"brainscan_slices_{patient['patient_id']}.csv",
-                        "text/csv", use_container_width=True)
+            st.download_button("\U0001f4c4 Download Report",
+                st.session_state["report_text"],
+                f"brainscan_report_{patient['patient_id']}.txt",
+                "text/plain", use_container_width=True)
