@@ -40,7 +40,7 @@ CHANNELS = ["flair", "luminance", "pre_contrast", "post_contrast"]
 CHANNEL_INDEX = {"pre_contrast": 0, "flair": 1, "post_contrast": 2}
 TIMING_REPS = 5
 FIELDS = ["experiment", "split", "patient", "slice_number", "image_file", "mask_file",
-          "method", "param", "channel", "morphology", "positive", "gt_px", "pred_px",
+          "method", "param", "channel", "morphology", "threshold", "positive", "gt_px", "pred_px",
           "tp", "fp", "fn", "tn", "dice", "iou", "precision", "recall", "specificity"]
 
 
@@ -79,21 +79,24 @@ def run_config(slices, method, param, morphology):
     params = dict(P.METHOD_PARAMS[method])
     if method == "percentile":
         params["percentile"] = param
-    preds = []
+    preds, thresholds = [], []
     for s in slices:
-        preds.append(P.run_pipeline(s["image"], method=method, params=params,
-                                    morphology=morphology)["final"] > 0)
-    return preds
+        res = P.run_pipeline(s["image"], method=method, params=params, morphology=morphology)
+        preds.append(res["final"] > 0)
+        t = res["seg"]["threshold_value"]
+        thresholds.append("" if t is None else float(t))
+    return preds, thresholds
 
 
-def rows_for(experiment, split, patient, slices, preds, method, param, channel, morphology):
+def rows_for(experiment, split, patient, slices, run, method, param, channel, morphology):
+    preds, thresholds = run
     out = []
-    for s, pred in zip(slices, preds):
+    for s, pred, thr in zip(slices, preds, thresholds):
         r = {"experiment": experiment, "split": split, "patient": patient,
              "slice_number": s["slice_number"], "image_file": s["image_file"],
              "mask_file": s["mask_file"], "method": method,
              "param": param if param is not None else "", "channel": channel,
-             "morphology": int(morphology)}
+             "morphology": int(morphology), "threshold": thr}
         r.update(slice_metrics(pred, s["gt"]))
         r["positive"] = int(r["positive"])
         out.append(r)
@@ -169,7 +172,8 @@ def environment():
     try:
         commit = subprocess.check_output(["git", "-C", ROOT, "rev-parse", "HEAD"], text=True).strip()
         dirty = bool(subprocess.check_output(
-            ["git", "-C", ROOT, "status", "--porcelain", "--", ".", ":!results"], text=True).strip())
+            ["git", "-C", ROOT, "status", "--porcelain", "--untracked-files=no", "--", ".", ":!results"],
+            text=True).strip())
     except Exception:
         commit, dirty = None, None
     cpu = platform.processor()
@@ -244,7 +248,7 @@ def main():
             for m, prm, mo in configs:
                 preds = run_config(sl, m, prm, mo)
                 main_rows += rows_for("main", split, p, sl, preds, m, prm, "flair", mo)
-                packed[f"{m}_{'morph' if mo else 'nomorph'}"][p] = np.packbits(np.stack(preds), axis=-1)
+                packed[f"{m}_{'morph' if mo else 'nomorph'}"][p] = np.packbits(np.stack(preds[0]), axis=-1)
             if split == "test" and (i + 1) % 10 == 0:
                 print(f"  test patients done: {i + 1}/{len(plist)}")
 
@@ -274,6 +278,25 @@ def main():
         tests[f"{a} vs {b}"] = {"n_patients": len(common), "mean_difference": float((x - y).mean()),
                                 "median_difference": float(np.median(x - y)),
                                 "statistic": float(res.statistic), "p_value": float(res.pvalue)}
+
+    # secondary analyses on the held-out cohort
+    from scipy.stats import spearmanr
+    thr = {}
+    for r in main_rows:
+        if r["split"] == "test" and r["morphology"] == 1 and r["method"] in ("percentile", "otsu"):
+            thr.setdefault((r["patient"], r["slice_number"]), {})[r["method"]] = r["threshold"]
+    pairs = [v for v in thr.values() if v.get("otsu") != "" and v.get("percentile") != ""]
+    pp_test = per_patient["test|percentile|morph"]
+    with_pos = [d for d in pp_test.values() if d["n_positive"]]
+    rho_n = spearmanr([d["n_positive"] for d in with_pos], [d["mean_dice"] for d in with_pos])
+    rho_g = spearmanr([d["gt_total_px"] for d in with_pos], [d["mean_dice"] for d in with_pos])
+    secondary = {
+        "otsu_below_percentile_threshold": {
+            "slices": len(pairs),
+            "fraction": sum(1 for v in pairs if v["otsu"] < v["percentile"]) / len(pairs)},
+        "spearman_test_n_positive_vs_patient_dice": {"rho": float(rho_n.statistic), "p_value": float(rho_n.pvalue)},
+        "spearman_test_reference_px_vs_patient_dice": {"rho": float(rho_g.statistic), "p_value": float(rho_g.pvalue)},
+    }
 
     # ---- Stage 3: timing (development cohort, frozen default configuration) ----
     dev_paths = [os.path.join(args.data, p, s["image_file"]) for p in dev for s in dev_cache[p]]
@@ -339,6 +362,7 @@ def main():
                "channel_ablation": abl_summary,
                "main": main_summary,
                "wilcoxon_test_patients": tests,
+               "secondary_test_analyses": secondary,
                "timing": timing}
     with open(os.path.join(args.out, "summary.json"), "w") as f:
         json.dump(summary, f, indent=2)
