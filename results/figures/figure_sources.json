@@ -1,0 +1,42 @@
+{
+  "fig02": "TCGA_DU_6401_19831001 slice 30",
+  "fig04_mask_fraction": {
+    "normalised": 0.372772216796875,
+    "clahe": 0.8921356201171875
+  },
+  "fig05_thresholds": {
+    "percentile": 125.0,
+    "otsu": 124.0,
+    "adaptive": null
+  },
+  "fig10_example_high": {
+    "patient": "TCGA_HT_8114_19981030",
+    "slice": 14,
+    "metric": "Dice 0.98",
+    "gt_px": 4273,
+    "pred_px": 4141
+  },
+  "fig11_example_typical": {
+    "patient": "TCGA_HT_A5RC_19990831",
+    "slice": 15,
+    "metric": "Dice 0.52",
+    "gt_px": 545,
+    "pred_px": 1248
+  },
+  "fig12_example_failure": {
+    "patient": "TCGA_HT_7694_19950404",
+    "slice": 13,
+    "metric": "Dice 0.00",
+    "gt_px": 5795,
+    "pred_px": 1746
+  },
+  "fig13_example_negative": {
+    "patient": "TCGA_CS_6186_20000601",
+    "slice": 10,
+    "metric": "empty reference; 1314 predicted px",
+    "gt_px": 0,
+    "pred_px": 1314
+  },
+  "test_median_positive_dice": 0.5197992191857222,
+  "test_negative_median_pred_px": 1314.0
+}
