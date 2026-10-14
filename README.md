@@ -8,8 +8,8 @@ Live app: https://minor2-brain-tumor-segmentation.streamlit.app
 
 ## Pipeline (version 2.0.0, `src/pipeline.py`)
 
-FLAIR channel (index 1 of the LGG TIFF) → min-max normalisation → Gaussian
-(σ = 1.0) → CLAHE (clip 2.0, 8×8) → brain mask from the normalised image
+FLAIR channel (index 1 of the LGG TIFF) → min-max normalization → Gaussian
+(σ = 1.0) → CLAHE (clip 2.0, 8×8) → brain mask from the normalized image
 (threshold 15, largest component, hole fill, 9×9 erosion) → threshold
 (brain-masked 75th percentile by default; Otsu and adaptive Gaussian also
 available) → opening then closing (5×5 ellipse) → keep components of 100 px to

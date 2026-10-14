@@ -66,7 +66,7 @@ def overlay(img, pred, gt):
 
 
 def block_diagram(out):
-    row1 = ["LGG TIFF\n(3 channels)", "FLAIR\n(channel 1)", "Min-max\nnormalise", "Gaussian\nσ = 1.0",
+    row1 = ["LGG TIFF\n(3 channels)", "FLAIR\n(channel 1)", "Min-max\nnormalize", "Gaussian\nσ = 1.0",
             "CLAHE\nclip 2.0"]
     row2 = ["Threshold\nP75 / Otsu /\nadaptive", "Open, then\nclose (5×5)", "Keep 100 px\nto 25%;\nlargest",
             "Mask and\npixel count"]
@@ -90,7 +90,7 @@ def block_diagram(out):
         draw(x, 0.1, s)
         if i < len(row2) - 1:
             ax.annotate("", xy=(x - 0.12, 0.5), xytext=(x, 0.5), arrowprops=arrow)
-    draw(1.06, 1.15, "Brain mask from the\nnormalised image: threshold\n15, largest component,\nhole fill, 9×9 erosion",
+    draw(1.06, 1.15, "Brain mask from the\nnormalized image: threshold\n15, largest component,\nhole fill, 9×9 erosion",
          w=1.9, h=0.8, fc="#fdf1e3", ec="#a0601a")
     ax.annotate("", xy=(4.5, 0.9), xytext=(4.5, 2.2), arrowprops=arrow)
     ax.annotate("", xy=(2.5, 1.95), xytext=(2.5, 2.2), arrowprops=dict(arrowstyle="->", lw=0.7, color="#a0601a"))
@@ -134,13 +134,13 @@ def main():
     res = P.run_pipeline(img, "percentile")
     st = res["pp_steps"]
     panel_grid([st["original"], st["normalized"], st["filtered"], st["enhanced"]],
-               ["(a) FLAIR input", "(b) Normalised", "(c) Gaussian", "(d) CLAHE"],
+               ["(a) FLAIR input", "(b) Normalized", "(c) Gaussian", "(d) CLAHE"],
                os.path.join(figdir, "fig03_preprocessing.png"), cols=4, size=1.6)
 
     brain_only = cv2.bitwise_and(res["enhanced"], res["enhanced"], mask=res["brain_mask"])
     old_mask = apply_skull_strip_approximation(res["enhanced"])
     panel_grid([st["normalized"], res["brain_mask"], brain_only, old_mask],
-               ["(a) Normalised", "(b) Brain mask", "(c) CLAHE in mask", "(d) Mask from CLAHE"],
+               ["(a) Normalized", "(b) Brain mask", "(c) CLAHE in mask", "(d) Mask from CLAHE"],
                os.path.join(figdir, "fig04_brain_mask.png"), cols=4, size=1.6)
     captions["fig04_mask_fraction"] = {"normalised": float((res["brain_mask"] > 0).mean()),
                                        "clahe": float((old_mask > 0).mean())}

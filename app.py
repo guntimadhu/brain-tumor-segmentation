@@ -723,8 +723,8 @@ with tab5:
             m_used = st.session_state["method_used"]
             L.append(f"  Pipeline        : version {PIPELINE_VERSION}")
             L.append("  Input channel   : FLAIR (channel 1 of the LGG TIFF)")
-            L.append("  Preprocessing   : min-max normalisation, Gaussian (sigma=1.0), CLAHE (clip 2.0, 8x8)")
-            L.append("  Brain mask      : threshold 15 on normalised image, largest component, hole fill, 9x9 erosion")
+            L.append("  Preprocessing   : min-max normalization, Gaussian (sigma=1.0), CLAHE (clip 2.0, 8x8)")
+            L.append("  Brain mask      : threshold 15 on normalized image, largest component, hole fill, 9x9 erosion")
             L.append(f"  Segmentation    : {METHOD_LABELS[m_used]} {METHOD_PARAMS[m_used] or ''}")
             L.append(f"  Morphology      : opening then closing ({MORPHOLOGY['kernel_size']}x{MORPHOLOGY['kernel_size']} ellipse, 1 iteration)")
             L.append(f"  Post-processing : keep components {MIN_COMPONENT_AREA} px to {int(MAX_COMPONENT_FRACTION*100)}% of image; largest kept")
