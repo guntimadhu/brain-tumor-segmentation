@@ -9,6 +9,43 @@ def _to_binary(mask):
     return (mask > 127).astype(np.uint8)
 
 
+def slice_metrics(pred, gt):
+    """Metrics used in the paper. pred and gt are boolean arrays.
+
+    Positive slice: reference has any foreground; Dice, IoU, recall and
+    precision are computed (precision = 0 when the prediction is empty).
+    Negative slice (empty reference): overlap metrics are undefined (None);
+    only the predicted foreground count and specificity are reported."""
+    tp = int(np.count_nonzero(pred & gt))
+    fp = int(np.count_nonzero(pred & ~gt))
+    fn = int(np.count_nonzero(~pred & gt))
+    tn = int(pred.size - tp - fp - fn)
+    m = {"positive": bool(gt.any()), "gt_px": tp + fn, "pred_px": tp + fp,
+         "tp": tp, "fp": fp, "fn": fn, "tn": tn, "specificity": tn / (tn + fp)}
+    if m["positive"]:
+        m["dice"] = 2 * tp / (2 * tp + fp + fn)
+        m["iou"] = tp / (tp + fp + fn)
+        m["recall"] = tp / (tp + fn)
+        m["precision"] = tp / (tp + fp) if tp + fp > 0 else 0.0
+    else:
+        m["dice"] = m["iou"] = m["recall"] = m["precision"] = None
+    return m
+
+
+def patient_metrics(pred_masks, ref_masks):
+    """Aggregate slice_metrics over one patient's annotated slices."""
+    rows = [slice_metrics(p > 0, r > 127) for p, r in zip(pred_masks, ref_masks) if r is not None]
+    pos = [r for r in rows if r["positive"]]
+    neg = [r for r in rows if not r["positive"]]
+    out = {"per_slice": rows, "n_positive": len(pos), "n_negative": len(neg),
+           "neg_nonempty": sum(1 for r in neg if r["pred_px"] > 0)}
+    for k in ["dice", "iou", "precision", "recall"]:
+        v = [r[k] for r in pos]
+        out[f"mean_{k}"] = float(np.mean(v)) if v else None
+        out[f"sd_{k}"] = float(np.std(v, ddof=1)) if len(v) > 1 else None
+    return out
+
+
 def compute_confusion_matrix_values(pred_mask, true_mask):
     """Compute TP, FP, TN, FN from masks."""
     pred = _to_binary(pred_mask).ravel()

@@ -12,12 +12,45 @@ def _is_image_file(filename):
     return filename.lower().endswith(IMAGE_EXTENSIONS) and not filename.startswith("__")
 
 
+def _slice_number(stem):
+    tail = stem.rsplit("_", 1)[-1]
+    return int(tail) if tail.isdigit() else -1
+
+
+def pair_images_and_masks(filenames):
+    """Pair each image with the mask of the same stem, ordered by slice number.
+
+    Returns (image_names, mask_names) where mask_names[i] is the mask for
+    image_names[i], or None if no mask was supplied for that slice.
+    """
+    images, masks = {}, {}
+    for f in filenames:
+        if not _is_image_file(f):
+            continue
+        stem = os.path.splitext(f)[0]
+        if stem.lower().endswith("_mask"):
+            masks[stem[:-5]] = f
+        else:
+            images[stem] = f
+    stems = sorted(images, key=lambda s: (_slice_number(s), s))
+    return [images[s] for s in stems], [masks.get(s) for s in stems]
+
+
+def _extract_flair_channel(pil_img):
+    """Return the FLAIR channel. The LGG dataset README documents the channel
+    order as pre-contrast, FLAIR, post-contrast, so FLAIR is channel index 1."""
+    arr = np.array(pil_img)
+    if arr.ndim == 3 and arr.shape[2] >= 2:
+        return arr[:, :, 1]
+    return arr
+
+
 def load_single_image(image_path):
     """Load a TIF/PNG image as a grayscale numpy array normalized to 0-255 uint8."""
     if not os.path.isfile(image_path):
         raise FileNotFoundError(f"Image not found: {image_path}")
-    img = Image.open(image_path).convert("L")
-    arr = np.array(img, dtype=np.float64)
+    img = Image.open(image_path)
+    arr = _extract_flair_channel(img).astype(np.float64)
     if arr.max() > arr.min():
         arr = (arr - arr.min()) / (arr.max() - arr.min()) * 255
     return arr.astype(np.uint8)
@@ -35,8 +68,8 @@ def load_single_mask(mask_path):
 
 
 def _image_from_bytes(data):
-    img = Image.open(io.BytesIO(data)).convert("L")
-    arr = np.array(img, dtype=np.float64)
+    img = Image.open(io.BytesIO(data))
+    arr = _extract_flair_channel(img).astype(np.float64)
     if arr.max() > arr.min():
         arr = (arr - arr.min()) / (arr.max() - arr.min()) * 255
     return arr.astype(np.uint8)
@@ -86,23 +119,18 @@ def load_from_zip(zip_file):
             basename = os.path.basename(info.filename)
             if not _is_image_file(basename):
                 continue
-            raw = zf.read(info.filename)
-            file_data[basename] = raw
-            if "_mask" in basename.lower():
-                mask_names.append(basename)
-            else:
-                image_names.append(basename)
+            file_data[basename] = zf.read(info.filename)
 
-    image_names.sort()
-    mask_names.sort()
+    image_names, paired_masks = pair_images_and_masks(file_data.keys())
 
     if not image_names:
         raise ValueError("No image files found inside the ZIP archive.")
 
     images = [_image_from_bytes(file_data[n]) for n in image_names]
-    masks = [_mask_from_bytes(file_data[n]) for n in mask_names] if mask_names else []
+    mask_names = [m for m in paired_masks if m is not None]
+    masks = [_mask_from_bytes(file_data[m]) if m else None for m in paired_masks] if mask_names else []
 
-    tumor_slices = [i for i, m in enumerate(masks) if bool(np.any(m > 10))]
+    tumor_slices = [i for i, m in enumerate(masks) if m is not None and bool(np.any(m > 0))]
     zip_name = os.path.splitext(zip_file.name)[0]
     return {
         "images": images,
@@ -168,25 +196,17 @@ def load_patient_data(patient_folder_path):
     if not os.path.isdir(patient_folder_path):
         raise NotADirectoryError(f"Patient folder not found: {patient_folder_path}")
 
-    all_files = sorted(os.listdir(patient_folder_path))
-    image_files = []
-    mask_files = []
-
-    for f in all_files:
-        if not _is_image_file(f):
-            continue
-        if "_mask" in f:
-            mask_files.append(f)
-        else:
-            image_files.append(f)
+    image_files, paired_masks = pair_images_and_masks(os.listdir(patient_folder_path))
 
     if not image_files:
         raise ValueError(f"No image files found in {patient_folder_path}")
 
     images = [load_single_image(os.path.join(patient_folder_path, f)) for f in image_files]
-    masks = [load_single_mask(os.path.join(patient_folder_path, f)) for f in mask_files] if mask_files else []
+    mask_files = [m for m in paired_masks if m is not None]
+    masks = ([load_single_mask(os.path.join(patient_folder_path, m)) if m else None for m in paired_masks]
+             if mask_files else [])
 
-    tumor_slices = [i for i, m in enumerate(masks) if bool(np.any(m > 10))]
+    tumor_slices = [i for i, m in enumerate(masks) if m is not None and bool(np.any(m > 0))]
     patient_id = os.path.basename(patient_folder_path)
     return {
         "images": images,
@@ -217,15 +237,6 @@ def get_patient_list(data_dir):
         if has_images:
             patients.append(folder)
     return patients
-
-
-def get_pixel_spacing():
-    """Return assumed pixel spacing for the 2D Kaggle dataset.
-
-    Since this dataset provides 2D slices without DICOM/NIfTI metadata,
-    we assume standard MRI spacing values for pseudo-3D volume estimation.
-    """
-    return {"pixel_spacing_mm": 1.0, "slice_thickness_mm": 5.0}
 
 
 def stack_slices_to_volume(images_list):

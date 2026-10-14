@@ -30,7 +30,8 @@ def filter_components_by_size(mask, min_area=100, max_area=None):
     return filtered
 
 
-def select_tumor_region(mask, strategy="largest", min_area=50, original_image=None):
+def select_tumor_region(mask, strategy="largest", min_area=50, original_image=None,
+                        max_area=None):
     """Select the most likely tumor region from candidate components.
 
     Strategies:
@@ -42,11 +43,18 @@ def select_tumor_region(mask, strategy="largest", min_area=50, original_image=No
     if cc["num_components"] == 0:
         return np.zeros_like(mask)
 
+    h, w = mask.shape
+    total_pixels = h * w
+
     valid = []
     for i in range(1, cc["num_components"] + 1):
         area = cc["stats"][i, cv2.CC_STAT_AREA]
-        if area >= min_area:
-            valid.append(i)
+        if area < min_area:
+            continue
+        upper = max_area if max_area is not None else int(total_pixels * 0.25)
+        if area > upper:
+            continue
+        valid.append(i)
 
     if not valid:
         return np.zeros_like(mask)
@@ -56,7 +64,6 @@ def select_tumor_region(mask, strategy="largest", min_area=50, original_image=No
     elif strategy == "brightest" and original_image is not None:
         chosen = max(valid, key=lambda i: float(original_image[cc["labels"] == i].mean()))
     elif strategy == "central":
-        h, w = mask.shape
         cx, cy = w / 2, h / 2
         chosen = min(valid, key=lambda i: (cc["centroids"][i][0] - cx) ** 2 + (cc["centroids"][i][1] - cy) ** 2)
     else:
