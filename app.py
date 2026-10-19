@@ -542,10 +542,14 @@ elif step == 3:
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Positive slices", ev_p["n_positive"])
         if ev_p["mean_dice"] is not None:
-            sd = f" ± {ev_p['sd_dice']:.3f}" if ev_p["sd_dice"] is not None else ""
-            c2.metric("Mean Dice (positive slices)", f"{ev_p['mean_dice']:.3f}{sd}")
-            c3.metric("Mean precision / recall", f"{ev_p['mean_precision']:.2f} / {ev_p['mean_recall']:.2f}")
-        c4.metric("Empty-reference slices with a prediction", f"{ev_p['neg_nonempty']} / {ev_p['n_negative']}")
+            sd = f"SD {ev_p['sd_dice']:.3f} across positive slices" if ev_p["sd_dice"] is not None else None
+            c2.metric("Mean Dice", f"{ev_p['mean_dice']:.3f}", help=sd)
+            c3.metric("Precision / recall", f"{ev_p['mean_precision']:.2f} / {ev_p['mean_recall']:.2f}")
+        c4.metric("Empty slices predicted", f"{ev_p['neg_nonempty']} / {ev_p['n_negative']}",
+                  help="Slices whose reference mask is empty but which still received a predicted region")
+        if ev_p["sd_dice"] is not None:
+            st.caption(f"Mean Dice over {ev_p['n_positive']} positive slices: "
+                       f"{ev_p['mean_dice']:.3f} ± {ev_p['sd_dice']:.3f} (SD).")
 
         pos = [(i, r["dice"]) for i, r in enumerate(ev_p["per_slice"]) if r["positive"]]
         if pos:
