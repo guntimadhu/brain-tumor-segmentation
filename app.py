@@ -23,6 +23,29 @@ from src.pipeline import (run_pipeline, METHOD_LABELS, METHOD_PARAMS, DEFAULT_ME
 
 GITHUB = "https://github.com/guntimadhu/brain-tumor-segmentation"
 
+DL_KEY = "deep_learning"
+DL_NAMES = {"attention_unet": "Attention U-Net", "unet": "U-Net"}
+try:
+    from src.dl import infer as dl_infer  # noqa: E402
+    DL_MODEL = next((n for n in DL_NAMES if os.path.exists(os.path.join(dl_infer.MODEL_DIR, f"{n}_seed42.pt"))), None)
+except Exception:  # torch not installed
+    dl_infer, DL_MODEL = None, None
+DL_AVAILABLE = DL_MODEL is not None
+ALL_METHODS = ({DL_KEY: f"Deep learning: {DL_NAMES[DL_MODEL]} (trained)"} if DL_AVAILABLE else {}) | dict(METHOD_LABELS)
+APP_DEFAULT = DL_KEY if DL_AVAILABLE else DEFAULT_METHOD
+
+
+@st.cache_resource(show_spinner="Loading the trained model…")
+def get_dl_model(name):
+    return dl_infer.load(name, 42)
+
+
+def heat(img_u8, values, vmax=None):
+    v = values / (vmax or (values.max() if values.max() > 0 else 1))
+    cmap = cv2.applyColorMap((np.clip(v, 0, 1) * 255).astype(np.uint8), cv2.COLORMAP_TURBO)[:, :, ::-1]
+    base = cv2.cvtColor(to_display(img_u8), cv2.COLOR_GRAY2RGB)
+    return (0.45 * base + 0.55 * cmap).astype(np.uint8)
+
 st.set_page_config(page_title="BrainScan · FLAIR segmentation", page_icon=":material/neurology:",
                    layout="wide", initial_sidebar_state="collapsed")
 
@@ -121,15 +144,15 @@ STEPS = [
     ("Evaluate", "Compare with reference"),
     ("Report", "Summary and downloads"),
 ]
-DEFAULTS = {"step": 0, "patient": None, "slice_idx": 0, "method_used": DEFAULT_METHOD,
-            "all_masks": None, "count_stats": None, "slice_df": None, "eval_patient": None,
+DEFAULTS = {"step": 0, "patient": None, "slice_idx": 0, "method_used": APP_DEFAULT,
+            "all_masks": None, "dl_probs": None, "count_stats": None, "slice_df": None, "eval_patient": None,
             "processed": False}
 for k, v in DEFAULTS.items():
     st.session_state.setdefault(k, v)
 
 
 def reset_results():
-    for k in ["all_masks", "count_stats", "slice_df", "eval_patient"]:
+    for k in ["all_masks", "dl_probs", "count_stats", "slice_df", "eval_patient"]:
         st.session_state[k] = None
     st.session_state["processed"] = False
 
@@ -277,7 +300,7 @@ st.markdown(f"""
   </div>
   <div class="chips">
     <span class="chip">Pipeline v{PIPELINE_VERSION}</span>
-    <span class="chip">No machine learning</span>
+    <span class="chip">Classical + deep learning</span>
     <span class="chip chip-warn">Research prototype · not for clinical use</span>
   </div>
 </header>
@@ -356,17 +379,24 @@ if step == 0:
             else:
                 st.info("No reference mask for this slice.", icon=":material/info:")
 
-    with st.expander("About the method and its limitations", icon=":material/help:"):
+    with st.expander("About the methods and their limitations", icon=":material/help:"):
+        dl_line = ""
+        dl_json = os.path.join(os.path.dirname(os.path.abspath(__file__)), "results", "dl", "summary_dl.json")
+        if os.path.exists(dl_json):
+            R = __import__("json").load(open(dl_json))["results"]
+            a, c = R.get(f"{DL_MODEL}_seed42"), R.get("classical_percentile")
+            if a and c:
+                dl_line = (f"- **Test result (28 unseen patients):** {DL_NAMES[DL_MODEL]} patient-level Dice "
+                           f"{a['patient_mean_dice']:.3f} vs {c['patient_mean_dice']:.3f} for the classical pipeline.\n")
         st.markdown(f"""
 - **Input:** channel 1 (FLAIR) of the three-channel LGG TIFF (channel order documented as pre-contrast, FLAIR, post-contrast).
-- **Pipeline:** min–max normalization → Gaussian (σ = 1.0) → CLAHE (clip 2.0) → brain mask from the normalized image →
+- **Deep learning (default):** 2-D Attention U-Net trained on 70 patients; outputs a probability map, an
+  uncertainty map (MC-dropout) and a Grad-CAM explanation.
+- **Classical pipeline:** min–max normalization → Gaussian (σ = 1.0) → CLAHE (clip 2.0) → brain mask →
   threshold → opening then closing ({MORPHOLOGY['kernel_size']}×{MORPHOLOGY['kernel_size']}) → keep components of
   {MIN_COMPONENT_AREA} px to {int(MAX_COMPONENT_FRACTION * 100)}% of the image → largest component.
-- **Held-out result (98 patients):** patient-level Dice 0.389 ± 0.249 for the default 75th-percentile threshold.
-- **Known limitations:** the pipeline keeps a component on almost every slice, so it usually predicts a region
-  even where no abnormality is annotated; pixel counts therefore overestimate abnormality extent.
-- **Measurements are pixel counts.** No physical areas or volumes are reported.
-- Code, data splits and results: [{GITHUB}]({GITHUB})
+{dl_line}- **Measurements are pixel counts.** No physical areas or volumes are reported.
+- Research prototype, not for clinical use. Code, data splits and results: [{GITHUB}]({GITHUB})
 """)
     nav()
 
@@ -374,27 +404,38 @@ if step == 0:
 # STEP 2 — SEGMENT
 # ===========================================================================
 elif step == 1:
-    header("2. Segment", "Choose a threshold method and run the pipeline on every slice. "
-           "Defaults are the configuration evaluated in the paper.")
+    header("2. Segment", "Choose a method and run it on every slice: the trained deep-learning model or one of "
+           "the three classical threshold pipelines.")
     nav("top")
-    method = st.radio("Threshold method", list(METHOD_LABELS), format_func=lambda m: METHOD_LABELS[m] +
-                      (" (default)" if m == DEFAULT_METHOD else ""),
-                      index=list(METHOD_LABELS).index(st.session_state["method_used"]), horizontal=True)
-    st.caption(f"Parameters: {METHOD_PARAMS[method] or 'threshold chosen automatically'}; "
-               f"opening then closing, {MORPHOLOGY['kernel_size']}×{MORPHOLOGY['kernel_size']} ellipse; "
-               f"components {MIN_COMPONENT_AREA} px to {int(MAX_COMPONENT_FRACTION * 100)}% of the image; largest kept.")
+    method = st.radio("Segmentation method", list(ALL_METHODS), format_func=lambda m: ALL_METHODS[m] +
+                      (" (default)" if m == APP_DEFAULT else ""),
+                      index=list(ALL_METHODS).index(st.session_state["method_used"])
+                      if st.session_state["method_used"] in ALL_METHODS else 0, horizontal=True)
+    if method == DL_KEY:
+        st.caption(f"2-D {DL_NAMES[DL_MODEL]} trained on 70 patients (FLAIR, 128×128 input, Dice + cross-entropy loss). "
+                   "Output probability > 0.5; regions smaller than 50 px removed.")
+    else:
+        st.caption(f"Parameters: {METHOD_PARAMS[method] or 'threshold chosen automatically'}; "
+                   f"opening then closing, {MORPHOLOGY['kernel_size']}×{MORPHOLOGY['kernel_size']} ellipse; "
+                   f"components {MIN_COMPONENT_AREA} px to {int(MAX_COMPONENT_FRACTION * 100)}% of the image; largest kept.")
     if st.session_state["processed"] and method != st.session_state["method_used"]:
-        st.warning("The method changed. Run the pipeline again to update the results.", icon=":material/sync_problem:")
+        st.warning("The method changed. Run again to update the results.", icon=":material/sync_problem:")
 
     if st.button(f"Run on all {patient['slice_count']} slices", type="primary", icon=":material/play_arrow:"):
         bar = st.progress(0, text="Starting…")
-        masks = []
-        for i, img in enumerate(patient["images"]):
-            masks.append(run_pipeline(img, method=method)["final"])
-            bar.progress((i + 1) / patient["slice_count"], text=f"Slice {i + 1} of {patient['slice_count']}")
+        probs = None
+        if method == DL_KEY:
+            bar.progress(0.3, text="Running the trained model…")
+            probs, _ = dl_infer.predict_probs(get_dl_model(DL_MODEL), np.stack(patient["images"]))
+            masks = [dl_infer.postprocess(p).astype(np.uint8) * 255 for p in probs]
+        else:
+            masks = []
+            for i, img in enumerate(patient["images"]):
+                masks.append(run_pipeline(img, method=method)["final"])
+                bar.progress((i + 1) / patient["slice_count"], text=f"Slice {i + 1} of {patient['slice_count']}")
         refs = patient["masks"] if patient["has_masks"] else None
         st.session_state.update({
-            "all_masks": masks, "method_used": method, "processed": True,
+            "all_masks": masks, "dl_probs": probs, "method_used": method, "processed": True,
             "count_stats": summarize_foreground(masks, refs),
             "slice_df": slice_dataframe(masks, patient["image_files"], refs),
             "eval_patient": patient_metrics(masks, patient["masks"]) if patient["has_masks"] else None,
@@ -402,7 +443,50 @@ elif step == 1:
         bar.empty()
         st.rerun()
 
-    if st.session_state["processed"]:
+    if st.session_state["processed"] and st.session_state["method_used"] == DL_KEY:
+        st.success(f"Done: {ALL_METHODS[DL_KEY]} applied to {patient['slice_count']} slices. "
+                   "Inspect any slice below, then continue to Measure.", icon=":material/check_circle:")
+        idx = slice_picker(patient, "pick_seg")
+        img = patient["images"][idx]
+        final = st.session_state["all_masks"][idx]
+        prob = st.session_state["dl_probs"][idx]
+        ref = ref_mask(patient, idx)
+        st.markdown("##### Result")
+        legend(ref is not None)
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            show(img, "FLAIR slice")
+        with c2:
+            show(final, "Predicted mask")
+        with c3:
+            st.image(overlay(img, final > 0, ref), caption="Overlay", width="stretch")
+
+        with st.expander("Model output · probability, uncertainty and explanation", icon=":material/psychology:",
+                         expanded=True):
+            model = get_dl_model(DL_MODEL)
+            _, std = dl_infer.predict_probs(model, img[None], mc_passes=20)
+            cam = dl_infer.gradcam(model, img)
+            cols = st.columns(3)
+            with cols[0]:
+                st.image(heat(img, prob, vmax=1.0), caption="Tumour probability (0 blue → 1 red)", width="stretch")
+            with cols[1]:
+                st.image(heat(img, std[0], vmax=0.25), caption="Uncertainty (MC-dropout, 20 passes)", width="stretch")
+            with cols[2]:
+                st.image(heat(img, cam, vmax=1.0), caption="Grad-CAM: where the model looked", width="stretch")
+            st.caption("Uncertainty is the spread of 20 predictions with dropout switched on; bright areas are where "
+                       "the model is unsure, usually along the tumour border. Grad-CAM highlights the image regions "
+                       "that drove the prediction.")
+        with st.expander("How the model was trained", icon=":material/school:"):
+            st.markdown(
+                "- **Architecture:** 2-D U-Net encoder–decoder with attention gates on the skip connections "
+                "(the decoder decides which encoder features to pass on).\n"
+                "- **Data:** 70 training patients, 12 validation patients (early stopping), 28 test patients "
+                "never seen in training.\n"
+                "- **Training:** FLAIR slices resized to 128×128, Dice + binary cross-entropy loss, Adam with cosine "
+                "learning rate, rotation/flip/intensity/noise augmentation.\n"
+                "- **Inference:** probability map resized back to 256×256, threshold 0.5, tiny regions removed.")
+
+    if st.session_state["processed"] and st.session_state["method_used"] != DL_KEY:
         m = st.session_state["method_used"]
         st.success(f"Done: {METHOD_LABELS[m]} applied to {patient['slice_count']} slices. "
                    "Inspect any slice below, then continue to Measure.", icon=":material/check_circle:")
@@ -609,15 +693,20 @@ elif step == 4:
          f"Generated           : {datetime.datetime.now():%Y-%m-%d %H:%M}",
          f"Slices              : {patient['slice_count']} ({patient['image_shape'][0]} x {patient['image_shape'][1]} px)",
          f"Reference masks     : {'available' if patient['has_masks'] else 'not available'}", "",
-         "PIPELINE", "-" * 62,
-         f"Version             : {PIPELINE_VERSION}",
-         "Input channel       : FLAIR (channel 1 of the LGG TIFF)",
-         "Preprocessing       : min-max normalization, Gaussian (sigma 1.0), CLAHE (clip 2.0, 8x8)",
-         "Brain mask          : threshold 15 on normalized image, largest component, hole fill, 9x9 erosion",
-         f"Threshold           : {METHOD_LABELS[m]} {METHOD_PARAMS[m] or ''}",
-         f"Morphology          : opening then closing ({MORPHOLOGY['kernel_size']}x{MORPHOLOGY['kernel_size']} ellipse)",
-         f"Components          : {MIN_COMPONENT_AREA} px to {int(MAX_COMPONENT_FRACTION * 100)}% of image; largest kept", "",
-         "MASK MEASUREMENT (pixels; no spatial calibration available)", "-" * 62,
+         "METHOD", "-" * 62,
+         "Input channel       : FLAIR (channel 1 of the LGG TIFF)"]
+    if m == DL_KEY:
+        L += [f"Model               : 2-D {DL_NAMES[DL_MODEL]}, trained on 70 patients (seed 42)",
+              "Input               : 128x128 FLAIR slice, z-score normalized",
+              "Output              : probability > 0.5; regions < 50 px removed", ""]
+    else:
+        L += [f"Pipeline version    : {PIPELINE_VERSION}",
+              "Preprocessing       : min-max normalization, Gaussian (sigma 1.0), CLAHE (clip 2.0, 8x8)",
+              "Brain mask          : threshold 15 on normalized image, largest component, hole fill, 9x9 erosion",
+              f"Threshold           : {METHOD_LABELS[m]} {METHOD_PARAMS[m] or ''}",
+              f"Morphology          : opening then closing ({MORPHOLOGY['kernel_size']}x{MORPHOLOGY['kernel_size']} ellipse)",
+              f"Components          : {MIN_COMPONENT_AREA} px to {int(MAX_COMPONENT_FRACTION * 100)}% of image; largest kept", ""]
+    L += ["MASK MEASUREMENT (pixels; no spatial calibration available)", "-" * 62,
          f"Predicted foreground: {cs['pred_total_px']:,} px on {cs['pred_affected_slices']}/{cs['total_slices']} slices"]
     if "ref_total_px" in cs:
         L.append(f"Reference foreground: {cs['ref_total_px']:,} px on {cs['ref_affected_slices']} slices")

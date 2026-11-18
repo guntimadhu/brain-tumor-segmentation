@@ -1,7 +1,8 @@
 # Classical FLAIR Abnormality Segmentation and Mask Measurement
 
-Classical image-processing pipeline (no machine learning) that segments FLAIR
-abnormalities in brain MRI slices and reports foreground pixel counts, with a
+Classical image-processing pipeline that segments FLAIR abnormalities in brain
+MRI slices and reports foreground pixel counts, compared with a trained U-Net
+and Attention U-Net (with Monte-Carlo-dropout uncertainty and Grad-CAM), in a
 Streamlit interface. Research prototype; not for clinical use.
 
 Live app: https://minor2-brain-tumor-segmentation.streamlit.app
@@ -17,6 +18,28 @@ available) → opening then closing (5×5 ellipse) → keep components of 100 px
 
 No physical areas or volumes are reported: the TIFF data carry no verified
 spatial calibration.
+
+## Deep-learning models (`src/dl/`)
+
+2-D U-Net and Attention U-Net (16–128 channels, 256-channel bottleneck, about
+1.95 M parameters) on the FLAIR slice resized to 128×128 and z-scored; output
+probability > 0.5, components < 50 px removed. Trained on CPU with Dice + BCE
+loss and Adam. Patient split (`experiments/dl_split.json`, seed 42): 70 train,
+the 12 development patients for validation, 28 test. Monte-Carlo dropout
+(20 passes) gives an uncertainty map; Grad-CAM on the bottleneck shows where
+the model looked. The seed-42 checkpoints are in `models/`; the app uses the
+Attention U-Net by default.
+
+```bash
+python experiments/dl_prepare.py --data <path>/kaggle_3m
+python experiments/train_dl.py --model attention_unet --seed 42
+python experiments/evaluate_dl.py
+python experiments/make_dl_figures.py
+```
+
+Results on the 28 test patients (`results/dl/summary_dl.json`): patient-level
+Dice 0.662 (U-Net) and 0.652 (Attention U-Net) vs 0.379 for the classical
+percentile pipeline on the same patients.
 
 ## Setup and app
 
